@@ -1,146 +1,198 @@
 import os
 import requests
-from datetime import datetime
-from flask import Flask, request
+from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
 import logging
 import re
+import json
 
 app = Flask(__name__)
 
-# ========== НАСТРОЙКИ ==========
+# ========== КОНФИГУРАЦИЯ ==========
 TELEGRAM_TOKEN = '8516044859:AAFaJg3HeNMHhw-xV4Nm2goMbLmiFnmJDKI'
 VETMANAGER_KEY = 'b5aa96-c7d6f9-7296aa-0c1670-805a64'
-VETMANAGER_URL = 'https://drug14.vetmanager2.ru'
+VETMANAGER_DOMAIN = 'drug14.vetmanager2.ru'
+VETMANAGER_URL = f'https://{VETMANAGER_DOMAIN}'
 ADMIN_ID = 921853682
+
+# Настройки логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Хранилище сессий
 user_sessions = {}
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# ========== REAL VETMANAGER API ==========
-def test_api_connection():
-    """Тестирует подключение к Vetmanager API"""
-    headers = {"X-User-Token": VETMANAGER_KEY}
-    url = f"{VETMANAGER_URL}/api/clients"
+# ========== VETMANAGER API ФУНКЦИИ ==========
+def make_vetmanager_request(endpoint, params=None, method='GET'):
+    """Выполняет запрос к Vetmanager API"""
+    headers = {
+        "X-User-Token": VETMANAGER_KEY,
+        "Accept": "application/json"
+    }
     
-    logger.info("🔌 Тестирую подключение к Vetmanager API...")
+    url = f"{VETMANAGER_URL}/api/{endpoint}"
     
     try:
-        response = requests.get(url, headers=headers, params={"limit": 1}, timeout=10)
-        logger.info(f"Статус API: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            clients = data.get("data", [])
-            logger.info(f"✅ API работает! Найдено клиентов: {len(clients)}")
-            
-            # Логируем первого клиента для отладки
-            if clients:
-                client = clients[0]
-                logger.info(f"Пример клиента: ID={client.get('id')}, Имя={client.get('firstName')}, Телефон={client.get('phone')}")
-            
-            return True, len(clients)
+        if method.upper() == 'GET':
+            response = requests.get(url, headers=headers, params=params, timeout=15)
         else:
-            logger.error(f"❌ Ошибка API: {response.status_code}")
-            logger.error(f"Ответ: {response.text[:200]}")
-            return False, 0
-            
+            response = requests.post(url, headers=headers, json=params, timeout=15)
+        
+        response.raise_for_status()
+        return response.json()
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Vetmanager API error: {e}")
+        if hasattr(e.response, 'text'):
+            logger.error(f"Response: {e.response.text[:500]}")
+        return None
     except Exception as e:
-        logger.error(f"❌ Ошибка подключения к API: {e}")
-        return False, 0
+        logger.error(f"Unexpected error: {e}")
+        return None
 
-def get_client_by_phone_from_api(phone_input):
-    """Ищет клиента по номеру через реальный API"""
-    headers = {"X-User-Token": VETMANAGER_KEY}
-    url = f"{VETMANAGER_URL}/api/clients"
+def test_vetmanager_connection():
+    """Тестирует подключение к Vetmanager"""
+    logger.info("🔌 Тестирую подключение к Vetmanager...")
     
-    # Очищаем номер для поиска
-    phone_clean = re.sub(r'\D', '', str(phone_input))
+    # Пробуем получить информацию о клиниках
+    result = make_vetmanager_request('clinics')
+    
+    if result and 'data' in result:
+        clinics = result['data']
+        logger.info(f"✅ Подключение успешно! Клиник найдено: {len(clinic)}")
+        
+        # Пробуем получить одного клиента
+        clients_result = make_vetmanager_request('clients', {'limit': 1})
+        if clients_result and 'data' in clients_result:
+            client_count = len(clients_result['data'])
+            logger.info(f"✅ Клиенты доступны! Найдено: {client_count}")
+            return True, client_count
+    
+    logger.error("❌ Не удалось подключиться к Vetmanager")
+    return False, 0
+
+def find_client_by_phone(phone_number):
+    """Ищет клиента по номеру телефона"""
+    # Очищаем номер
+    phone_clean = re.sub(r'\D', '', str(phone_number))
     
     # Пробуем разные варианты поиска
-    search_patterns = [
-        phone_clean,  # 79996925927
-        phone_clean[1:] if phone_clean.startswith('7') else phone_clean,  # 9996925927
-        phone_clean[1:] if phone_clean.startswith('8') else phone_clean,  # 9996925927 если начинался с 8
-    ]
+    search_patterns = []
     
-    logger.info(f"🔍 Ищу клиента по номеру: {phone_input} (очищенный: {phone_clean})")
+    if len(phone_clean) == 11 and phone_clean.startswith('7'):
+        search_patterns.extend([
+            phone_clean,  # 79996925927
+            phone_clean[1:],  # 9996925927
+            f"+7 ({phone_clean[1:4]}) {phone_clean[4:7]}-{phone_clean[7:9]}-{phone_clean[9:]}"  # Форматированный
+        ])
+    elif len(phone_clean) == 10 and phone_clean.startswith('9'):
+        search_patterns.extend([
+            f"7{phone_clean}",  # 79996925927
+            phone_clean,  # 9996925927
+            f"8{phone_clean}",  # 89996925927
+            f"+7 ({phone_clean[0:3]}) {phone_clean[3:6]}-{phone_clean[6:8]}-{phone_clean[8:]}"  # Форматированный
+        ])
     
+    logger.info(f"🔍 Поиск клиента по телефону: {phone_number}")
+    logger.info(f"📱 Варианты поиска: {search_patterns}")
+    
+    # Ищем по всем вариантам
     for pattern in search_patterns:
         if not pattern:
             continue
             
-        params = {"filter[phone]": pattern}
+        params = {
+            'filter[phone]': pattern,
+            'limit': 1
+        }
         
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
+        result = make_vetmanager_request('clients', params)
+        
+        if result and 'data' in result and result['data']:
+            client_data = result['data'][0]
+            client_id = client_data.get('id')
+            logger.info(f"✅ Найден клиент ID: {client_id}, Имя: {client_data.get('firstName')}")
             
-            if response.status_code == 200:
-                data = response.json()
-                clients = data.get("data", [])
-                
-                if clients:
-                    client = clients[0]
-                    logger.info(f"✅ Найден клиент: ID={client.get('id')}, Имя={client.get('firstName')}")
-                    
-                    # Получаем дополнительную информацию
-                    full_client_info = get_full_client_info(client.get('id'))
-                    if full_client_info:
-                        client.update(full_client_info)
-                    
-                    return client
-                    
-        except Exception as e:
-            logger.error(f"Ошибка поиска: {e}")
+            # Получаем полную информацию
+            full_info = get_full_client_info(client_id)
+            if full_info:
+                client_data.update(full_info)
+            
+            return client_data
     
-    logger.warning(f"❌ Клиент не найден по номеру: {phone_input}")
+    logger.warning(f"❌ Клиент не найден по номеру: {phone_number}")
     return None
 
 def get_full_client_info(client_id):
-    """Получает полную информацию о клиенте"""
-    headers = {"X-User-Token": VETMANAGER_KEY}
+    """Получает полную информацию о клиенте и его питомцах"""
+    client_info = {}
     
-    # 1. Основная информация клиента
-    client_url = f"{VETMANAGER_URL}/api/client/{client_id}"
+    # 1. Детальная информация о клиенте
+    result = make_vetmanager_request(f'client/{client_id}')
+    if result and 'data' in result:
+        client_info.update(result['data'])
     
-    try:
-        response = requests.get(client_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json().get("data", {})
-            
-            # 2. Питомцы клиента
-            pets_url = f"{VETMANAGER_URL}/api/pets"
-            pets_params = {"filter[client_id]": client_id, "limit": 10}
-            pets_response = requests.get(pets_url, headers=headers, params=pets_params, timeout=10)
-            
-            if pets_response.status_code == 200:
-                data['pets'] = pets_response.json().get("data", [])
-            
-            # 3. Последние записи (будущие)
-            from datetime import datetime, timedelta
-            today = datetime.now().strftime("%Y-%m-%d")
-            future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-            
-            appointments_url = f"{VETMANAGER_URL}/api/appointments"
-            app_params = {
-                "filter[client_id]": client_id,
-                "filter[date_from]": today,
-                "filter[date_to]": future,
-                "sort": "date",
-                "limit": 5
-            }
-            
-            app_response = requests.get(appointments_url, headers=headers, params=app_params, timeout=10)
-            if app_response.status_code == 200:
-                data['appointments'] = app_response.json().get("data", [])
-            
-            return data
-            
-    except Exception as e:
-        logger.error(f"Ошибка получения деталей клиента: {e}")
+    # 2. Питомцы клиента
+    pets_result = make_vetmanager_request('pets', {
+        'filter[client_id]': client_id,
+        'limit': 10
+    })
     
-    return {}
+    if pets_result and 'data' in pets_result:
+        client_info['pets'] = pets_result['data']
+    
+    # 3. Записи на прием (будущие)
+    today = datetime.now().strftime('%Y-%m-%d')
+    future_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+    
+    appointments_result = make_vetmanager_request('appointments', {
+        'filter[client_id]': client_id,
+        'filter[date_from]': today,
+        'filter[date_to]': future_date,
+        'sort': 'date',
+        'limit': 5
+    })
+    
+    if appointments_result and 'data' in appointments_result:
+        client_info['appointments'] = appointments_result['data']
+    
+    # 4. Последние визиты
+    visits_result = make_vetmanager_request('admission', {
+        'filter[client_id]': client_id,
+        'sort': '-id',
+        'limit': 3
+    })
+    
+    if visits_result and 'data' in visits_result:
+        client_info['last_visits'] = visits_result['data']
+    
+    # 5. Финансовая информация
+    finance_result = make_vetmanager_request('invoice', {
+        'filter[client_id]': client_id,
+        'sort': '-id',
+        'limit': 5
+    })
+    
+    if finance_result and 'data' in finance_result:
+        invoices = finance_result['data']
+        total_balance = 0
+        
+        # Рассчитываем баланс
+        for invoice in invoices:
+            status = invoice.get('status', '')
+            amount = float(invoice.get('amount', 0))
+            
+            if status == 'UNPAID':
+                total_balance += amount
+            elif status == 'PAID':
+                total_balance -= amount
+        
+        client_info['balance'] = total_balance
+    
+    return client_info
 
 # ========== TELEGRAM ФУНКЦИИ ==========
 def send_telegram_message(chat_id, text, parse_mode='HTML'):
@@ -155,80 +207,251 @@ def send_telegram_message(chat_id, text, parse_mode='HTML'):
     
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.json().get("ok", False)
+        return response.json()
     except Exception as e:
         logger.error(f"Telegram send error: {e}")
-        return False
+        return None
 
-# ========== TELEGRAM WEBHOOK ==========
+def format_client_info(client_data):
+    """Форматирует информацию о клиенте для отправки"""
+    if not client_data:
+        return "❌ Информация о клиенте не найдена"
+    
+    lines = []
+    
+    # Заголовок
+    lines.append("✅ <b>ВАША КАРТА КЛИЕНТА</b>")
+    lines.append("══════════════════════════════════")
+    
+    # Основная информация
+    first_name = client_data.get('firstName', '')
+    last_name = client_data.get('lastName', '')
+    middle_name = client_data.get('middleName', '')
+    
+    full_name = f"{last_name} {first_name} {middle_name}".strip()
+    if full_name:
+        lines.append(f"👤 <b>Клиент:</b> {full_name}")
+    
+    phone = client_data.get('phone', '')
+    if phone:
+        lines.append(f"📞 <b>Телефон:</b> {phone}")
+    
+    email = client_data.get('email', '')
+    if email:
+        lines.append(f"📧 <b>Email:</b> {email}")
+    
+    city = client_data.get('city', '')
+    address = client_data.get('address', '')
+    if city or address:
+        location = f"{city}, {address}".strip(', ')
+        lines.append(f"📍 <b>Адрес:</b> {location}")
+    
+    balance = client_data.get('balance', 0)
+    if balance:
+        lines.append(f"💰 <b>Баланс:</b> {balance:.2f} руб.")
+    
+    # Дата рождения
+    birth_date = client_data.get('birthDate', '')
+    if birth_date:
+        try:
+            birth_date_obj = datetime.strptime(birth_date, '%Y-%m-%d')
+            birth_date_str = birth_date_obj.strftime('%d.%m.%Y')
+            lines.append(f"🎂 <b>Дата рождения:</b> {birth_date_str}")
+        except:
+            pass
+    
+    lines.append("")
+    
+    # Питомцы
+    pets = client_data.get('pets', [])
+    if pets:
+        lines.append("🐾 <b>ВАШИ ПИТОМЦЫ:</b>")
+        
+        for i, pet in enumerate(pets[:5], 1):
+            pet_name = pet.get('alias', 'Без имени')
+            pet_type = pet.get('type_title', pet.get('type', ''))
+            breed = pet.get('breed_title', pet.get('breed', ''))
+            birth_date = pet.get('birthday', '')
+            
+            pet_line = f"{i}. <b>{pet_name}</b>"
+            
+            if pet_type or breed or birth_date:
+                pet_line += " ("
+                details = []
+                if pet_type:
+                    details.append(pet_type)
+                if breed:
+                    details.append(breed)
+                if birth_date:
+                    try:
+                        birth_obj = datetime.strptime(birth_date, '%Y-%m-%d')
+                        age_years = (datetime.now() - birth_obj).days // 365
+                        details.append(f"{age_years} лет")
+                    except:
+                        pass
+                
+                pet_line += ", ".join(details) + ")"
+            
+            lines.append(pet_line)
+        
+        if len(pets) > 5:
+            lines.append(f"... и ещё {len(pets) - 5} питомцев")
+    else:
+        lines.append("🐾 <b>Питомцы:</b> нет")
+    
+    lines.append("")
+    
+    # Записи на прием
+    appointments = client_data.get('appointments', [])
+    if appointments:
+        lines.append("📅 <b>БЛИЖАЙШИЕ ЗАПИСИ:</b>")
+        
+        for i, app in enumerate(appointments[:3], 1):
+            date = app.get('date', '')
+            time = app.get('time', '10:00')
+            
+            # Форматируем дату
+            try:
+                date_obj = datetime.strptime(date, '%Y-%m-%d')
+                date_str = date_obj.strftime('%d.%m.%Y')
+                
+                # Определяем день недели
+                weekday = date_obj.strftime('%A')
+                weekday_ru = {
+                    'Monday': 'Пн',
+                    'Tuesday': 'Вт',
+                    'Wednesday': 'Ср',
+                    'Thursday': 'Чт',
+                    'Friday': 'Пт',
+                    'Saturday': 'Сб',
+                    'Sunday': 'Вс'
+                }.get(weekday, weekday)
+                
+                date_display = f"{date_str} ({weekday_ru})"
+            except:
+                date_display = date
+            
+            lines.append(f"{i}. {date_display} в {time}")
+    else:
+        lines.append("📅 <b>Ближайшие записи:</b> нет")
+    
+    # Контакты клиники
+    lines.append("")
+    lines.append("══════════════════════════════════")
+    lines.append("🏥 <b>ВЕТКЛИНИКА</b>")
+    lines.append("📍 <b>Адрес:</b> г. Ростов-на-Дону")
+    lines.append("📞 <b>Телефон:</b> +7 (XXX) XXX-XX-XX")
+    lines.append("⏰ <b>Часы работы:</b> Пн-Пт 9:00-20:00, Сб-Вс 10:00-18:00")
+    
+    lines.append("")
+    lines.append("💡 <i>Для записи на прием или уточнения информации обратитесь на ресепшн</i>")
+    
+    return "\n".join(lines)
+
+# ========== FLASK WEBHOOK ==========
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    """Обработчик сообщений от Telegram"""
-    data = request.json
-    
-    if 'message' in data:
-        message = data['message']
-        chat_id = message['chat']['id']
-        text = message.get('text', '').strip()
+    """Обработчик вебхука от Telegram"""
+    try:
+        data = request.get_json()
         
-        if text == '/start':
-            handle_start(chat_id)
-        elif chat_id in user_sessions:
-            handle_phone_input(chat_id, text)
-        else:
-            send_telegram_message(
-                chat_id,
-                "Для получения информации из вашей карты клиента отправьте:\n\n"
-                "<b>/start</b> - начать поиск"
-            )
+        if 'message' in data:
+            message = data['message']
+            chat_id = message['chat']['id']
+            text = message.get('text', '').strip()
+            
+            logger.info(f"Получено сообщение от {chat_id}: {text}")
+            
+            if text == '/start':
+                handle_start_command(chat_id)
+            elif text == '/help':
+                send_telegram_message(
+                    chat_id,
+                    "ℹ️ <b>Помощь по боту</b>\n\n"
+                    "<b>Доступные команды:</b>\n"
+                    "/start - начать поиск карты клиента\n"
+                    "/help - показать эту справку\n"
+                    "/status - статус системы\n\n"
+                    "Просто введите номер телефона, чтобы найти свою карту."
+                )
+            elif text == '/status':
+                api_working, client_count = test_vetmanager_connection()
+                status_text = "🟢 РАБОТАЕТ" if api_working else "🔴 НЕДОСТУПЕН"
+                send_telegram_message(
+                    chat_id,
+                    f"🔧 <b>Статус системы</b>\n\n"
+                    f"<b>Vetmanager API:</b> {status_text}\n"
+                    f"<b>Клиентов в базе:</b> {client_count}\n"
+                    f"<b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                )
+            elif chat_id in user_sessions and user_sessions[chat_id].get('awaiting_phone'):
+                handle_phone_input(chat_id, text)
+            else:
+                # Если пользователь просто отправляет текст, предполагаем, что это номер телефона
+                if re.search(r'\d', text) and len(text) >= 5:
+                    handle_phone_input(chat_id, text)
+                else:
+                    send_telegram_message(
+                        chat_id,
+                        "🤔 <b>Я не понял ваш запрос</b>\n\n"
+                        "Чтобы найти свою карту клиента, отправьте мне номер телефона, "
+                        "указанный в вашей карте.\n\n"
+                        "Или используйте команду /start"
+                    )
+        
+        return jsonify({"status": "ok"})
     
-    return 'OK'
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"status": "error", "message": str(e)})
 
-def handle_start(chat_id):
+def handle_start_command(chat_id):
     """Обработка команды /start"""
-    user_sessions[chat_id] = {'waiting': True}
+    # Тестируем подключение к Vetmanager
+    api_working, client_count = test_vetmanager_connection()
     
-    # Тестируем подключение к API
-    api_working, clients_count = test_api_connection()
-    
-    if not api_working:
-        welcome_text = """⚠️ <b>СИСТЕМА В РЕЖИМЕ ОБСЛУЖИВАНИЯ</b>
-
-В настоящее время база данных клиники недоступна.
-
-📱 <b>Для получения информации:</b>
-Обратитесь на ресепшн клиники.
-
-📍 <b>Клиника:</b> VetClinic
-⏰ <b>Часы работы:</b> Пн-Пт 9:00-20:00"""
-        
-        logger.warning(f"API не доступен для пользователя {chat_id}")
-    else:
+    if api_working:
         welcome_text = f"""🎉 <b>ДОБРО ПОЖАЛОВАТЬ В VETCLINIC!</b>
 
 Я помогу вам получить информацию из вашей карты клиента.
 
-✅ <b>База данных доступна</b>
-📊 Всего клиентов в системе: {clients_count}
+✅ <b>Система подключена к базе данных</b>
+📊 Клиентов в системе: {client_count}
 
-<b>📱 ВАШИ ДЕЙСТВИЯ:</b>
+<b>📱 КАК ПОЛЬЗОВАТЬСЯ:</b>
 
 1️⃣ <b>Введите номер телефона</b>, указанный в вашей карте
-2️⃣ <b>Получите реальную информацию</b> из базы данных
-3️⃣ <b>Узнайте о питомцах и записях</b>
+2️⃣ <b>Получите полную информацию</b> о себе и питомцах
+3️⃣ <b>Узнайте о ближайших записях</b> на прием
 
 <b>👇 ВВЕДИТЕ ВАШ НОМЕР ТЕЛЕФОНА:</b>
 
 💡 <i>Примеры форматов:</i>
 • <code>+7(999)692-59-27</code>
 • <code>89996925927</code>
-• <code>9996925927</code></i>"""
+• <code>9996925927</code>
+• <code>8 (999) 692-59-27</code></i>"""
+    else:
+        welcome_text = """⚠️ <b>СИСТЕМА В РЕЖИМЕ ОБСЛУЖИВАНИЯ</b>
+
+В настоящее время база данных клиники временно недоступна.
+
+📱 <b>Для получения информации:</b>
+Обратитесь на ресепшн клиники.
+
+📍 <b>Клиника:</b> VetClinic
+📞 <b>Телефон:</b> +7 (XXX) XXX-XX-XX
+⏰ <b>Часы работы:</b> Пн-Пт 9:00-20:00"""
     
     send_telegram_message(chat_id, welcome_text)
-    logger.info(f"Пользователь {chat_id} начал диалог. API работает: {api_working}")
+    
+    if api_working:
+        user_sessions[chat_id] = {'awaiting_phone': True}
+        logger.info(f"Пользователь {chat_id} начал поиск. API работает: {api_working}")
 
 def handle_phone_input(chat_id, phone_input):
     """Обработка введенного номера телефона"""
+    # Сбрасываем сессию
     user_sessions.pop(chat_id, None)
     
     logger.info(f"Пользователь {chat_id} ищет по номеру: {phone_input}")
@@ -236,180 +459,279 @@ def handle_phone_input(chat_id, phone_input):
     # Сообщение о поиске
     send_telegram_message(chat_id, "🔍 <b>Ищу вашу карту в базе данных...</b>")
     
-    # Ищем клиента через реальный API
-    client = get_client_by_phone_from_api(phone_input)
+    # Ищем клиента
+    client_data = find_client_by_phone(phone_input)
     
-    if not client:
-        send_telegram_message(
-            chat_id,
-            "❌ <b>Клиент не найден</b>\n\n"
-            "<b>Возможные причины:</b>\n"
-            "• Номер введен неправильно\n"
-            "• Вы не зарегистрированы в нашей клинике\n"
-            "• Ваш номер указан в другом формате\n\n"
-            "<b>Попробуйте:</b>\n"
-            "• Ввести номер в другом формате\n"
-            "• Обратиться на ресепшн для уточнения\n\n"
-            "<b>Или начните заново:</b> /start"
-        )
+    if not client_data:
+        # Проверяем подключение к API
+        api_working, _ = test_vetmanager_connection()
+        
+        if not api_working:
+            error_text = """❌ <b>База данных временно недоступна</b>
+
+Не удалось подключиться к системе Vetmanager.
+
+📱 <b>Что делать:</b>
+1. Попробуйте повторить попытку позже
+2. Обратитесь на ресепшн клиники для получения информации
+
+📍 <b>Контакты клиники:</b>
+Телефон: +7 (XXX) XXX-XX-XX
+Адрес: г. Ростов-на-Дону
+
+Или начните заново: /start"""
+        else:
+            error_text = f"""❌ <b>Клиент не найден</b>
+
+По номеру <code>{phone_input}</code> не найдено карт в базе данных.
+
+<b>Возможные причины:</b>
+• Номер введен неправильно
+• Вы не зарегистрированы в нашей клинике
+• Ваш номер указан в другом формате
+
+<b>Попробуйте:</b>
+• Ввести номер в другом формате
+• Обратиться на ресепшн для уточнения данных
+
+<b>Примеры правильных форматов:</b>
+• <code>+7(999)692-59-27</code>
+• <code>89996925927</code>
+• <code>9996925927</code>
+
+Или начните заново: /start"""
+        
+        send_telegram_message(chat_id, error_text)
         return
     
-    # Формируем РЕАЛЬНУЮ информацию из базы
-    message_parts = []
+    # Форматируем и отправляем информацию
+    client_info = format_client_info(client_data)
+    send_telegram_message(chat_id, client_info)
     
-    # Основная информация
-    first_name = client.get('firstName', '')
-    last_name = client.get('lastName', '')
-    full_name = f"{first_name} {last_name}".strip()
-    phone = client.get('phone', phone_input)
-    email = client.get('email', 'не указан')
-    balance = client.get('balance', 0)
-    city = client.get('city', 'не указан')
-    address = client.get('address', 'не указан')
+    # Логируем успешный поиск
+    client_name = f"{client_data.get('lastName', '')} {client_data.get('firstName', '')}".strip()
+    phone = client_data.get('phone', phone_input)
+    pet_count = len(client_data.get('pets', []))
+    appointment_count = len(client_data.get('appointments', []))
     
-    message_parts.append("✅ <b>ВАША КАРТА КЛИЕНТА</b>")
-    message_parts.append("══════════════════════════════════")
-    
-    if full_name:
-        message_parts.append(f"👤 <b>Имя:</b> {full_name}")
-    
-    if phone:
-        message_parts.append(f"📞 <b>Телефон:</b> {phone}")
-    
-    if email and email != 'не указан':
-        message_parts.append(f"📧 <b>Email:</b> {email}")
-    
-    if balance is not None:
-        message_parts.append(f"💰 <b>Баланс:</b> {balance} руб.")
-    
-    if city and city != 'не указан':
-        message_parts.append(f"🏙️ <b>Город:</b> {city}")
-    
-    # Питомцы
-    pets = client.get('pets', [])
-    if pets:
-        message_parts.append("")
-        message_parts.append("🐾 <b>ВАШИ ПИТОМЦЫ:</b>")
-        
-        for i, pet in enumerate(pets[:5], 1):
-            pet_name = pet.get('alias', 'Без имени')
-            pet_type = pet.get('type', '')
-            breed = pet.get('breed', '')
-            
-            pet_info = pet_name
-            if pet_type:
-                pet_info += f" ({pet_type}"
-                if breed:
-                    pet_info += f", {breed}"
-                pet_info += ")"
-            elif breed:
-                pet_info += f" ({breed})"
-            
-            message_parts.append(f"{i}. {pet_info}")
-        
-        if len(pets) > 5:
-            message_parts.append(f"... и ещё {len(pets) - 5} питомцев")
-    else:
-        message_parts.append("")
-        message_parts.append("🐾 <b>Питомцы:</b> не указаны")
-    
-    # Записи
-    appointments = client.get('appointments', [])
-    if appointments:
-        message_parts.append("")
-        message_parts.append("📅 <b>БЛИЖАЙШИЕ ЗАПИСИ:</b>")
-        
-        for i, app in enumerate(appointments[:3], 1):
-            date = app.get('date', '')
-            time = app.get('time', '10:00')
-            
-            # Находим питомца для записи
-            pet_name = "питомец"
-            pet_id = app.get('pet_id')
-            
-            for pet in pets:
-                if str(pet.get('id')) == str(pet_id):
-                    pet_name = pet.get('alias', 'питомец')
-                    break
-            
-            message_parts.append(f"{i}. {date} в {time} - {pet_name}")
-        
-        if len(appointments) > 3:
-            message_parts.append(f"... и ещё {len(appointments) - 3} записей")
-    else:
-        message_parts.append("")
-        message_parts.append("📅 <b>Ближайшие записи:</b> нет")
-    
-    # Контакты клиники
-    message_parts.append("")
-    message_parts.append("══════════════════════════════════")
-    message_parts.append("🏥 <b>ВЕТКЛИНИКА</b>")
-    message_parts.append("📍 <b>Адрес:</b> г. Ростов-на-Дону")
-    message_parts.append("📞 <b>Телефон:</b> +7 (XXX) XXX-XX-XX")
-    message_parts.append("⏰ <b>Часы работы:</b> Пн-Пт 9:00-20:00, Сб-Вс 10:00-18:00")
-    
-    message_parts.append("")
-    message_parts.append("💡 <i>Для записи на прием или уточнения информации обратитесь на ресепшн</i>")
-    
-    # Отправляем РЕАЛЬНЫЕ данные клиенту
-    send_telegram_message(chat_id, "\n".join(message_parts))
+    logger.info(f"✅ Данные отправлены клиенту: {client_name}, питомцев: {pet_count}, записей: {appointment_count}")
     
     # Уведомление администратору
-    admin_msg = f"""📱 <b>КЛИЕНТ ПОЛУЧИЛ РЕАЛЬНУЮ КАРТУ</b>
+    admin_message = f"""📱 <b>КЛИЕНТ ПОЛУЧИЛ КАРТУ</b>
 
-👤 Клиент: {full_name if full_name else 'Не указано'}
+👤 Клиент: {client_name or 'Не указано'}
 📞 Телефон: {phone}
 🆔 Telegram ID: {chat_id}
 📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-✅ Данные загружены из Vetmanager"""
-    
-    if pets:
-        admin_msg += f"\n🐾 Питомцев: {len(pets)}"
-    
-    if appointments:
-        admin_msg += f"\n📅 Записей: {len(appointments)}"
-    
-    send_telegram_message(ADMIN_ID, admin_msg)
-    
-    logger.info(f"Реальные данные отправлены клиенту: {full_name}")
+✅ Данные загружены из Vetmanager
+🐾 Питомцев: {pet_count}
+📅 Записей: {appointment_count}"""
+
+    send_telegram_message(ADMIN_ID, admin_message)
 
 # ========== WEB ИНТЕРФЕЙС ==========
 @app.route('/')
-def home():
-    # Тестируем API при загрузке страницы
-    api_working, clients_count = test_api_connection()
+def index():
+    """Главная страница"""
+    api_working, client_count = test_vetmanager_connection()
     
-    status = "🟢 РАБОТАЕТ" if api_working else "🔴 НЕДОСТУПЕН"
+    status_color = "green" if api_working else "red"
+    status_text = "РАБОТАЕТ" if api_working else "НЕДОСТУПЕН"
+    status_emoji = "🟢" if api_working else "🔴"
     
     return f"""
-    <html>
+    <!DOCTYPE html>
+    <html lang="ru">
     <head>
-        <title>🏥 VetClinic Real Data Bot</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>🏥 VetClinic Telegram Bot</title>
         <style>
-            body {{ font-family: Arial; margin: 40px; }}
-            .container {{ max-width: 800px; margin: 0 auto; }}
-            .card {{ background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 10px; }}
-            .status-ok {{ color: green; font-weight: bold; }}
-            .status-error {{ color: red; font-weight: bold; }}
+            body {{
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                margin: 0;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: #333;
+            }}
+            .container {{
+                max-width: 1000px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 15px;
+                padding: 30px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            }}
+            .header {{
+                text-align: center;
+                margin-bottom: 30px;
+            }}
+            .header h1 {{
+                color: #2c3e50;
+                font-size: 2.5em;
+                margin-bottom: 10px;
+            }}
+            .status {{
+                display: inline-block;
+                padding: 5px 15px;
+                border-radius: 20px;
+                font-weight: bold;
+                margin: 10px 0;
+            }}
+            .status-working {{
+                background: #d4edda;
+                color: #155724;
+            }}
+            .status-error {{
+                background: #f8d7da;
+                color: #721c24;
+            }}
+            .card {{
+                background: #f8f9fa;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 20px 0;
+                border-left: 5px solid #667eea;
+            }}
+            .card h3 {{
+                color: #2c3e50;
+                margin-top: 0;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+                margin: 30px 0;
+            }}
+            .feature {{
+                background: white;
+                border-radius: 10px;
+                padding: 20px;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+                text-align: center;
+            }}
+            .feature h4 {{
+                color: #667eea;
+                margin: 15px 0;
+            }}
+            .btn {{
+                display: inline-block;
+                background: #667eea;
+                color: white;
+                padding: 12px 30px;
+                border-radius: 25px;
+                text-decoration: none;
+                font-weight: bold;
+                margin: 10px;
+                transition: transform 0.3s, box-shadow 0.3s;
+            }}
+            .btn:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+                color: white;
+                text-decoration: none;
+            }}
+            .api-info {{
+                background: #e3f2fd;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 20px 0;
+                font-family: monospace;
+                overflow-x: auto;
+            }}
+            .footer {{
+                text-align: center;
+                margin-top: 40px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+                color: #666;
+            }}
+            .instructions {{
+                background: #fff3cd;
+                border-left: 5px solid #ffc107;
+                padding: 15px;
+                border-radius: 5px;
+                margin: 20px 0;
+            }}
+            @media (max-width: 768px) {{
+                .container {{
+                    padding: 15px;
+                }}
+                .header h1 {{
+                    font-size: 2em;
+                }}
+            }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🏥 VetClinic Telegram Bot</h1>
-            <p>Система получения РЕАЛЬНЫХ данных из Vetmanager</p>
-            
-            <div class="card">
-                <h2>📊 Статус системы</h2>
-                <p><strong>Подключение к Vetmanager:</strong> <span class="{'status-ok' if api_working else 'status-error'}">{status}</span></p>
-                <p><strong>Клиентов в базе:</strong> {clients_count}</p>
-                <p><strong>Telegram бот:</strong> @Fulsim_bot</p>
+            <div class="header">
+                <h1>🏥 VetClinic Telegram Bot</h1>
+                <p>Система получения информации из карт клиентов</p>
+                <div class="status {'status-working' if api_working else 'status-error'}">
+                    {status_emoji} Vetmanager API: {status_text}
+                </div>
             </div>
             
             <div class="card">
-                <h2>🔧 Проверка</h2>
-                <p><a href="/health">Проверить статус API</a></p>
-                <p><a href="/test">Тест поиска клиента</a></p>
+                <h3>📊 Статистика системы</h3>
+                <p><strong>Статус подключения:</strong> {status_emoji} {status_text}</p>
+                <p><strong>Клиентов в базе:</strong> {client_count}</p>
+                <p><strong>Telegram бот:</strong> @Fulsim_bot</p>
+                <p><strong>Последняя проверка:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
+            </div>
+            
+            <div class="instructions">
+                <h4>🚀 Как начать пользоваться:</h4>
+                <p>1. Откройте Telegram и найдите бота <strong>@Fulsim_bot</strong></p>
+                <p>2. Отправьте команду <code>/start</code></p>
+                <p>3. Введите номер телефона, указанный в вашей карте клиента</p>
+                <p>4. Получите полную информацию о себе и своих питомцах</p>
+            </div>
+            
+            <div class="grid">
+                <div class="feature">
+                    <h4>👤 Поиск клиентов</h4>
+                    <p>Быстрый поиск по номеру телефона в любом формате</p>
+                </div>
+                
+                <div class="feature">
+                    <h4>🐾 Информация о питомцах</h4>
+                    <p>Полный список питомцев с породами и возрастом</p>
+                </div>
+                
+                <div class="feature">
+                    <h4>📅 Управление записями</h4>
+                    <p>Просмотр ближайших записей на прием</p>
+                </div>
+                
+                <div class="feature">
+                    <h4>💰 Финансовая информация</h4>
+                    <p>Баланс счета и история платежей</p>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>🔗 Полезные ссылки</h3>
+                <p>
+                    <a href="/health" class="btn">Проверить API</a>
+                    <a href="/test-api" class="btn">Тест подключения</a>
+                    <a href="https://t.me/Fulsim_bot" class="btn" target="_blank">Открыть бота</a>
+                </p>
+            </div>
+            
+            <div class="api-info">
+                <h4>🔧 Информация о подключении</h4>
+                <p><strong>Vetmanager домен:</strong> {VETMANAGER_DOMAIN}</p>
+                <p><strong>API URL:</strong> {VETMANAGER_URL}/api/</p>
+                <p><strong>API ключ:</strong> {VETMANAGER_KEY[:10]}...{VETMANAGER_KEY[-6:]}</p>
+            </div>
+            
+            <div class="footer">
+                <p>© 2025 VetClinic. Все права защищены.</p>
+                <p>Система работает на Flask + Vetmanager API</p>
             </div>
         </div>
     </body>
@@ -418,81 +740,131 @@ def home():
 
 @app.route('/health')
 def health_check():
-    api_working, clients_count = test_api_connection()
+    """Проверка здоровья системы"""
+    api_working, client_count = test_vetmanager_connection()
     
-    return {
-        "status": "healthy" if api_working else "api_error",
-        "vetmanager_api": "connected" if api_working else "disconnected",
-        "clients_in_database": clients_count,
+    return jsonify({
+        "status": "healthy" if api_working else "degraded",
+        "service": "vetclinic-telegram-bot",
+        "vetmanager_api": {
+            "connected": api_working,
+            "client_count": client_count,
+            "domain": VETMANAGER_DOMAIN
+        },
+        "telegram_bot": {
+            "token_set": bool(TELEGRAM_TOKEN),
+            "webhook_configured": True
+        },
         "timestamp": datetime.now().isoformat(),
-        "service": "vetclinic-real-data-bot"
-    }
+        "version": "2.0.0"
+    })
 
-@app.route('/test')
-def test_page():
-    """Тестовая страница для проверки поиска"""
-    return """
-    <html>
-    <body style="font-family: Arial; margin: 40px;">
-        <h1>🧪 Тест поиска клиента</h1>
-        <p>Проверьте работу поиска по номеру телефона</p>
+@app.route('/test-api')
+def test_api():
+    """Страница тестирования API"""
+    api_working, client_count = test_vetmanager_connection()
+    
+    if api_working:
+        # Пробуем получить несколько клиентов для демонстрации
+        result = make_vetmanager_request('clients', {'limit': 3})
+        clients = result.get('data', []) if result else []
         
-        <h3>Тестовые номера для проверки:</h3>
-        <ul>
-            <li>+7(999)692-59-27</li>
-            <li>89996925927</li>
-            <li>9996925927</li>
-        </ul>
+        html = f"""
+        <html>
+        <head><title>API Test</title></head>
+        <body style="font-family: Arial; padding: 20px;">
+            <h1>✅ Vetmanager API работает!</h1>
+            <p><strong>Клиентов в базе:</strong> {client_count}</p>
+            <p><strong>Примеры клиентов:</strong></p>
+            <ul>
+        """
         
-        <p>Откройте Telegram бота @Fulsim_bot и введите любой из этих номеров</p>
-        <p><a href="/">На главную</a></p>
-    </body>
-    </html>
-    """
+        for client in clients:
+            html += f"""
+                <li>
+                    ID: {client.get('id')}<br>
+                    Имя: {client.get('firstName')} {client.get('lastName')}<br>
+                    Телефон: {client.get('phone')}<br>
+                    Email: {client.get('email', 'не указан')}
+                </li>
+                <hr>
+            """
+        
+        html += f"""
+            </ul>
+            <p><a href="/">На главную</a></p>
+        </body>
+        </html>
+        """
+    else:
+        html = """
+        <html>
+        <body style="font-family: Arial; padding: 20px;">
+            <h1>❌ Vetmanager API недоступен</h1>
+            <p>Проверьте:</p>
+            <ul>
+                <li>API ключ: b5aa96-c7d6f9-7296aa-0c1670-805a64</li>
+                <li>Домен: drug14.vetmanager2.ru</li>
+                <li>Сеть и доступ к интернету</li>
+            </ul>
+            <p><a href="/">На главную</a></p>
+        </body>
+        </html>
+        """
+    
+    return html
 
-# ========== ЗАПУСК ==========
-def setup_webhook():
-    """Настройка webhook для Telegram"""
+# ========== НАСТРОЙКА И ЗАПУСК ==========
+def setup_telegram_webhook():
+    """Настройка вебхука для Telegram"""
     webhook_url = f"https://vetmanager-bot-1.onrender.com/webhook"
-    set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
     
     try:
-        response = requests.get(set_url)
-        logger.info(f"Webhook: {response.json()}")
+        response = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            params={"url": webhook_url}
+        )
+        
+        result = response.json()
+        if result.get("ok"):
+            logger.info(f"✅ Webhook настроен: {webhook_url}")
+        else:
+            logger.error(f"❌ Ошибка настройки webhook: {result}")
+            
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"❌ Ошибка при настройке webhook: {e}")
 
-if __name__ == "__main__":
-    logger.info("🚀 Запуск VetClinic Real Data Bot...")
+if __name__ == '__main__':
+    logger.info("🚀 Запуск VetClinic Telegram Bot с реальным Vetmanager...")
     
-    # Тестируем API при запуске
-    api_working, clients_count = test_api_connection()
+    # Тестируем подключение
+    api_working, client_count = test_vetmanager_connection()
     
-    # Настраиваем webhook
-    setup_webhook()
+    # Настраиваем вебхук
+    setup_telegram_webhook()
     
-    # Отправляем сообщение о запуске
-    status_msg = "с реальными данными" if api_working else "в режиме ожидания API"
-    
-    startup_msg = f"""🚀 <b>БОТ ЗАПУЩЕН {status_msg.upper()}</b>
+    # Отправляем сообщение о запуске администратору
+    startup_message = f"""🚀 <b>VETCLINIC БОТ ЗАПУЩЕН</b>
 
-✅ Система получения реальных данных из Vetmanager
+✅ Система подключена к реальной базе данных
 🏥 Клиника: VetClinic  
 🔗 Бот: @Fulsim_bot
 📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-<b>СТАТУС API:</b> {'🟢 РАБОТАЕТ' if api_working else '🔴 НЕДОСТУПЕН'}
-<b>КЛИЕНТОВ В БАЗЕ:</b> {clients_count}
+<b>СТАТУС VETMANAGER:</b> {'🟢 ПОДКЛЮЧЕН' if api_working else '🔴 НЕДОСТУПЕН'}
+<b>КЛИЕНТОВ В БАЗЕ:</b> {client_count}
 
 <b>ФУНКЦИИ:</b>
-• Реальный поиск клиентов
-• Отображение данных из базы
-• Информация о питомцах
-• Ближайшие записи
+• Реальный поиск клиентов в Vetmanager
+• Полная информация о клиенте и питомцах
+• Ближайшие записи на прием
+• Финансовая информация
+
+<b>Веб-интерфейс:</b> https://vetmanager-bot-1.onrender.com
 
 Готов к работе! 🐾"""
     
-    send_telegram_message(ADMIN_ID, startup_msg)
+    send_telegram_message(ADMIN_ID, startup_message)
     
     # Запускаем сервер
     port = int(os.environ.get('PORT', 10000))
