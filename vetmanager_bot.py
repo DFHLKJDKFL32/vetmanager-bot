@@ -353,3 +353,4 @@ if __name__ == "__main__":
 
 # 3. Проверьте файл
 Get-Content vetmanager_bot.py -First 10
+
