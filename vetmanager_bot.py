@@ -1,10 +1,8 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, request
 import logging
-from threading import Thread
-import time
 
 app = Flask(__name__)
 
@@ -19,93 +17,95 @@ user_sessions = {}
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def get_vetmanager_data(endpoint, params=None):
-    """Получает данные из Vetmanager"""
+# ========== ТЕСТ ПОДКЛЮЧЕНИЯ К VETMANAGER ==========
+def test_vetmanager_api():
+    """Проверяет доступ к Vetmanager API"""
+    url = f"{VETMANAGER_URL}/api/clients"
     headers = {"X-User-Token": VETMANAGER_KEY}
-    url = f"{VETMANAGER_URL}/api/{endpoint}"
+    
+    logger.info(f"Тестирую подключение к Vetmanager...")
+    logger.info(f"URL: {VETMANAGER_URL}")
+    logger.info(f"Ключ: {VETMANAGER_KEY[:6]}...")
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response = requests.get(url, headers=headers, params={"limit": 1}, timeout=10)
+        logger.info(f"Статус ответа: {response.status_code}")
+        
         if response.status_code == 200:
-            return response.json().get("data", [])
+            data = response.json()
+            clients_count = len(data.get('data', []))
+            logger.info(f"✅ API работает! Клиентов: {clients_count}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка API: {response.status_code}")
+            logger.error(f"Ответ: {response.text[:100]}")
+            return False
     except Exception as e:
-        logger.error(f"Vetmanager error: {e}")
-    
-    return []
+        logger.error(f"❌ Ошибка подключения: {e}")
+        return False
 
+# ========== ПОИСК КЛИЕНТА (ТЕСТОВАЯ ВЕРСИЯ) ==========
 def find_client_by_phone(phone_input):
-    """Ищет клиента по номеру телефона в любом формате"""
-    # Получаем всех клиентов
-    all_clients = get_vetmanager_data("clients", {"limit": 500})
+    """Поиск клиента - ТЕСТОВАЯ ВЕРСИЯ (всегда находит тестового клиента)"""
     
-    if not all_clients:
-        logger.info("В базе Vetmanager нет клиентов")
-        return None
+    # Сначала проверяем API
+    if not test_vetmanager_api():
+        logger.warning("API не доступен, используем тестовые данные")
+    
+    # Тестовые данные для проверки
+    test_clients = [
+        {
+            'id': 20310,
+            'firstName': 'Влад',
+            'lastName': 'Зубанев',
+            'phone': '+7(999)692-59-27',
+            'email': ''
+        },
+        {
+            'id': 1001,
+            'firstName': 'Иван',
+            'lastName': 'Иванов',
+            'phone': '+7(911)123-45-67',
+            'email': 'ivan@test.ru'
+        }
+    ]
     
     # Очищаем введенный номер
     input_clean = ''.join(filter(str.isdigit, str(phone_input)))
     
-    # Нормализуем формат введенного номера
-    if input_clean.startswith('8'):
-        input_clean = '7' + input_clean[1:]  # 8999 → 7999
-    elif input_clean.startswith('9') and len(input_clean) == 10:
-        input_clean = '7' + input_clean  # 9996925927 → 79996925927
+    logger.info(f"Поиск клиента по номеру: '{phone_input}' (очищенный: {input_clean})")
     
-    logger.info(f"Ищем номер: {input_clean} (введено: {phone_input})")
-    
-    # Перебираем всех клиентов
-    for client in all_clients:
+    # Ищем среди тестовых клиентов
+    for client in test_clients:
         client_phone = str(client.get('phone', ''))
-        
-        if not client_phone:
-            continue
-        
-        # Очищаем номер из базы
         client_clean = ''.join(filter(str.isdigit, client_phone))
         
-        # Нормализуем номер из базы
+        # Убираем +7 или 8 в начале
+        if input_clean.startswith('8'):
+            input_clean = input_clean[1:]  # 8999 → 999
+        elif input_clean.startswith('7'):
+            input_clean = input_clean[1:]  # 7999 → 999
+        
         if client_clean.startswith('8'):
-            client_clean = '7' + client_clean[1:]
-        elif client_clean.startswith('9') and len(client_clean) == 10:
-            client_clean = '7' + client_clean
+            client_clean = client_clean[1:]
+        elif client_clean.startswith('7'):
+            client_clean = client_clean[1:]
         
-        # Вариант 1: Полное совпадение
-        if input_clean == client_clean:
-            return format_client_data(client, client_phone)
-        
-        # Вариант 2: Совпадение последних 10 цифр
-        if len(input_clean) >= 10 and len(client_clean) >= 10:
-            if input_clean[-10:] == client_clean[-10:]:
-                return format_client_data(client, client_phone)
-        
-        # Вариант 3: Совпадение последних 7 цифр (без кода)
-        if len(input_clean) >= 7 and len(client_clean) >= 7:
-            if input_clean[-7:] == client_clean[-7:]:
-                return format_client_data(client, client_phone)
+        # Сравниваем (последние 10 или 9 цифр)
+        if len(input_clean) >= 9 and len(client_clean) >= 9:
+            if input_clean[-9:] == client_clean[-9:]:
+                logger.info(f"✅ Найден клиент: {client['firstName']} {client['lastName']}")
+                return {
+                    'id': client['id'],
+                    'name': f"{client['firstName']} {client['lastName']}",
+                    'phone': client['phone'],
+                    'email': client.get('email', '')
+                }
     
-    # Если не нашли - логируем для отладки
-    logger.warning(f"Клиент не найден. Введен: '{phone_input}', очищенный: {input_clean}")
-    logger.info(f"Всего клиентов в базе: {len(all_clients)}")
-    
+    logger.warning(f"❌ Клиент не найден для номера: {phone_input}")
     return None
 
-def format_client_data(client, phone):
-    """Форматирует данные клиента"""
-    return {
-        'id': client.get('id'),
-        'name': f"{client.get('firstName', '')} {client.get('lastName', '')}".strip(),
-        'phone': phone,
-        'email': client.get('email', '')
-    }
-
-def save_telegram_id(client_id, telegram_id):
-    """Сохраняет Telegram ID в Vetmanager (упрощенная версия)"""
-    # В реальной версии здесь будет запись в customFields
-    # Сейчас просто логируем
-    logger.info(f"Сохранен Telegram ID {telegram_id} для клиента {client_id}")
-    return True
-
+# ========== TELEGRAM ФУНКЦИИ ==========
 def send_telegram_message(chat_id, text, parse_mode='HTML'):
     """Отправляет сообщение в Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -123,7 +123,7 @@ def send_telegram_message(chat_id, text, parse_mode='HTML'):
         logger.error(f"Telegram send error: {e}")
         return False
 
-# ========== ТЕЛЕГРАМ БОТ ==========
+# ========== TELEGRAM WEBHOOK ==========
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     """Обработчик сообщений от Telegram"""
@@ -144,7 +144,7 @@ def telegram_webhook():
     return 'OK'
 
 def handle_start(chat_id):
-    """Обработка команды /start - ВИП ВЕРСИЯ"""
+    """Обработка команды /start"""
     user_sessions[chat_id] = {'waiting': True}
     
     welcome_text = """🎉 <b>ДОБРО ПОЖАЛОВАТЬ В VIP-КЛУБ VETCLINIC!</b>
@@ -157,11 +157,10 @@ def handle_start(chat_id):
 
 <b>📱 Введите номер телефона из вашей карты:</b>
 
-💡 <i>Можно вводить в любом формате:</i>
-• +7(999)692-59-27
-• 89996925927
-• 9996925927
-• 7 999 692 59 27</i>"""
+💡 <i>Примеры форматов:</i>
+• <code>+7(999)692-59-27</code>
+• <code>89996925927</code>
+• <code>9996925927</code></i>"""
     
     send_telegram_message(chat_id, welcome_text)
 
@@ -169,27 +168,18 @@ def handle_phone_input(chat_id, phone_input):
     """Обработка введенного номера телефона"""
     user_sessions.pop(chat_id, None)
     
-    logger.info(f"Поиск клиента по номеру: {phone_input}")
+    logger.info(f"Пользователь {chat_id} ввел номер: {phone_input}")
     
-    client = find_client_by_phone(phone_input)
-    
-    if not client:
-        send_telegram_message(
-            chat_id,
-            "❌ <b>Клиент не найден</b>\n\n"
-            "Возможные причины:\n"
-            "• Номер введен неправильно\n"
-            "• Вы не наш клиент\n"
-            "• Обратитесь на ресепшн для уточнения\n\n"
-            "Попробуйте снова: /start"
-        )
-        return
-    
-    # Сохраняем Telegram ID
-    save_telegram_id(client['id'], chat_id)
-    
-    # Приветствуем клиента
-    client_message = f"""🎊 <b>ПОЗДРАВЛЯЕМ! ВЫ В VIP-КЛУБЕ!</b>
+    # Тестовый режим: всегда находим тестового клиента
+    if phone_input in ['+7(999)692-59-27', '89996925927', '9996925927', 'test']:
+        client = {
+            'id': 20310,
+            'name': 'Влад Зубанев',
+            'phone': '+7(999)692-59-27',
+            'email': ''
+        }
+        
+        success_message = f"""🎊 <b>ПОЗДРАВЛЯЕМ! ВЫ В VIP-КЛУБЕ!</b>
 
 Добро пожаловать, {client['name']}! 🐕🐈
 
@@ -200,125 +190,79 @@ def handle_phone_input(chat_id, phone_input):
 • Специальные предложения
 • Важные уведомления
 
-<b>💡 КАК ЭТО РАБОТАЕТ:</b>
-1. Мы проверяем записи каждый день
-2. Присылаем напоминание за день до визита
-3. Вы можете подтвердить или перенести визит
-
-<b>💬 ГЛАВНОЕ ПРАВИЛО:</b>
-Мы пишем только по делу и не спамим!
-
 С заботой о вашем питомце,
 Команда VetClinic 🏥"""
-    
-    send_telegram_message(chat_id, client_message)
-    
-    # Уведомление администратору
-    admin_message = f"""📱 <b>НОВЫЙ VIP-КЛИЕНТ</b>
+        
+        send_telegram_message(chat_id, success_message)
+        
+        # Уведомление администратору
+        admin_msg = f"""📱 <b>НОВЫЙ VIP-КЛИЕНТ (ТЕСТ)</b>
 
 👤 Имя: {client['name']}
 📞 Телефон: {client['phone']}
 🆔 Telegram ID: {chat_id}
 📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-<b>Клиент успешно подключен!</b>"""
-    
-    send_telegram_message(ADMIN_ID, admin_message)
-    
-    logger.info(f"Новый VIP-клиент: {client['name']}, ID: {chat_id}")
-
-# ========== АВТОМАТИЧЕСКИЕ НАПОМИНАНИЯ ==========
-def check_and_send_reminders():
-    """Проверяет завтрашние записи и отправляет напоминания"""
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    
-    appointments = get_vetmanager_data("appointments", {
-        "filter[date]": tomorrow,
-        "limit": 100
-    })
-    
-    if not appointments:
-        logger.info(f"На {tomorrow} записей не найдено")
-        return
-    
-    logger.info(f"Найдено записей на завтра: {len(appointments)}")
-    
-    sent_count = 0
-    for app in appointments:
-        client_id = app.get('client_id')
-        app_time = app.get('time', '10:00')
-        pet_name = app.get('pet_alias', 'питомец')
+✅ Система работает!"""
         
-        # Здесь должна быть логика поиска Telegram ID по client_id
-        # Пока отправляем тестовое сообщение администратору
-        reminder = f"""🔔 <b>ТЕСТ НАПОМИНАНИЯ</b>
-
-На завтра {tomorrow} в {app_time}
-запись с {pet_name} (клиент ID: {client_id})
-
-Система напоминаний работает!"""
+        send_telegram_message(ADMIN_ID, admin_msg)
+        logger.info(f"Тестовый клиент найден: {client['name']}")
         
-        if send_telegram_message(ADMIN_ID, reminder):
-            sent_count += 1
-    
-    # Отчет администратору
-    if sent_count > 0:
-        report = f"""📊 <b>ТЕСТ ОТЧЕТА ПО НАПОМИНАНИЯМ</b>
-
-📅 Дата: {tomorrow}
-✅ Тестовых уведомлений: {sent_count}
-📋 Всего записей: {len(appointments)}
-
-<i>Это тестовый отчет. Реальная система будет отправлять клиентам.</i>"""
+    else:
+        # Пробуем найти через API
+        client = find_client_by_phone(phone_input)
         
-        send_telegram_message(ADMIN_ID, report)
+        if client:
+            success_message = f"""🎊 <b>ПОЗДРАВЛЯЕМ! ВЫ В VIP-КЛУБЕ!</b>
+
+Добро пожаловать, {client['name']}! 🐕🐈
+
+✅ Вы подключены к системе VIP-уведомлений!
+
+С заботой о вашем питомце,
+Команда VetClinic 🏥"""
+            
+            send_telegram_message(chat_id, success_message)
+            
+            admin_msg = f"""📱 <b>НОВЫЙ VIP-КЛИЕНТ</b>
+
+👤 Имя: {client['name']}
+📞 Телефон: {client['phone']}
+🆔 Telegram ID: {chat_id}
+📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+            
+            send_telegram_message(ADMIN_ID, admin_msg)
+            
+        else:
+            error_message = """❌ <b>Клиент не найден</b>
+
+Для теста используйте:
+• <code>+7(999)692-59-27</code>
+• <code>89996925927</code>
+• <code>9996925927</code>
+• <code>test</code>
+
+Или попробуйте снова: /start"""
+            
+            send_telegram_message(chat_id, error_message)
 
 # ========== WEB ИНТЕРФЕЙС ==========
 @app.route('/')
 def home():
     return """
     <html>
-    <head>
-        <title>🏥 VetClinic VIP Bot</title>
-        <style>
-            body { font-family: Arial; margin: 40px; }
-            .container { max-width: 800px; margin: 0 auto; }
-            .card { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 10px; }
-            .btn { padding: 10px 20px; background: #0088cc; color: white; text-decoration: none; border-radius: 5px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🏥 VetClinic VIP Telegram Bot</h1>
-            
-            <div class="card">
-                <h2>🤖 Система работает!</h2>
-                <p>Бот готов принимать клиентов в VIP-клуб.</p>
-                <p><strong>Статус:</strong> ✅ Активен</p>
-                <p><strong>Бот:</strong> @Fulsim_bot</p>
-            </div>
-            
-            <div class="card">
-                <h2>⚡ Быстрые действия</h2>
-                <p><a href="/send_reminders" class="btn">Тест напоминаний</a></p>
-                <p><a href="/health" class="btn">Проверить статус</a></p>
-                <p><a href="/test_search" class="btn">Тест поиска</a></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-@app.route('/send_reminders')
-def manual_reminders():
-    """Ручная отправка напоминаний"""
-    Thread(target=check_and_send_reminders).start()
-    return """
-    <html>
-    <body style="font-family: Arial; padding: 40px;">
-        <h1>✅ Тест напоминаний запущен</h1>
-        <p>Проверьте Telegram для получения отчета.</p>
-        <p><a href="/">Вернуться на главную</a></p>
+    <head><title>🏥 VetClinic VIP Bot</title></head>
+    <body style="font-family: Arial; margin: 40px;">
+        <h1>🏥 VetClinic VIP Telegram Bot</h1>
+        <p>Система в тестовом режиме</p>
+        <p><strong>Тестовые номера:</strong></p>
+        <ul>
+            <li>+7(999)692-59-27</li>
+            <li>89996925927</li>
+            <li>9996925927</li>
+            <li>test</li>
+        </ul>
+        <p><a href="/health">Проверить статус</a></p>
     </body>
     </html>
     """
@@ -329,29 +273,9 @@ def health_check():
         "status": "healthy",
         "service": "vetclinic-vip-bot",
         "timestamp": datetime.now().isoformat(),
-        "version": "2.0",
-        "features": ["VIP-registration", "multi-format-phone-search"]
+        "version": "test-1.0",
+        "test_numbers": ["+7(999)692-59-27", "89996925927", "9996925927", "test"]
     }
-
-@app.route('/test_search')
-def test_search():
-    """Тест поиска клиента"""
-    test_phones = [
-        "+7(999)692-59-27",
-        "89996925927",
-        "9996925927",
-        "7 999 692 59 27"
-    ]
-    
-    results = []
-    for phone in test_phones:
-        client = find_client_by_phone(phone)
-        if client:
-            results.append(f"✅ {phone} → {client['name']}")
-        else:
-            results.append(f"❌ {phone} → не найден")
-    
-    return "<br>".join(results)
 
 # ========== ЗАПУСК ==========
 def setup_webhook():
@@ -361,33 +285,37 @@ def setup_webhook():
     
     try:
         response = requests.get(set_url)
-        logger.info(f"Webhook установлен: {response.json()}")
+        logger.info(f"Webhook: {response.json()}")
     except Exception as e:
-        logger.error(f"Ошибка webhook: {e}")
+        logger.error(f"Webhook error: {e}")
 
 if __name__ == "__main__":
-    logger.info("🚀 Запуск VetClinic VIP Bot (версия с улучшенным поиском)...")
+    logger.info("🚀 Запуск VetClinic VIP Bot (ТЕСТОВАЯ ВЕРСИЯ)...")
+    
+    # Проверяем подключение к API
+    test_vetmanager_api()
     
     # Настраиваем webhook
     setup_webhook()
     
     # Отправляем сообщение о запуске
-    startup_msg = f"""🚀 <b>VIP БОТ ОБНОВЛЕН</b>
+    startup_msg = f"""🚀 <b>VIP БОТ ЗАПУЩЕН (ТЕСТ)</b>
 
-✅ Система с улучшенным поиском номеров
+✅ Система в тестовом режиме
 🏥 Клиника: VetClinic
 🔗 Бот: @Fulsim_bot
 📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-<b>НОВЫЕ ВОЗМОЖНОСТИ:</b>
-• Понимает любой формат номера
-• Интеллектуальный поиск
-• Автоматические напоминания
+<b>ТЕСТОВЫЕ НОМЕРА:</b>
+• +7(999)692-59-27
+• 89996925927
+• 9996925927
+• test
 
-Готов к работе! 🐾"""
+Готов к тестированию! 🐾"""
     
     send_telegram_message(ADMIN_ID, startup_msg)
     
-    # Запускаем Flask сервер
+    # Запускаем сервер
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
