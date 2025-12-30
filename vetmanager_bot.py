@@ -1,8 +1,7 @@
+```python
 import os
 import requests
 import json
-import random
-import string
 from datetime import datetime, timedelta
 from flask import Flask, request
 import logging
@@ -12,18 +11,17 @@ import time
 app = Flask(__name__)
 
 # ========== НАСТРОЙКИ ==========
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'ВАШ_ТОКЕН_ОТ_БОТА')
-TELEGRAM_TOKEN = '8516044859:AAFaJg3HeNMHhw-xV4Nm2goMbLmiFnmJDKI'  # Ваш текущий бот
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8516044859:AAFaJg3HeNMHhw-xV4Nm2goMbLmiFnmJDKI')
 VETMANAGER_KEY = os.getenv('VETMANAGER_KEY', 'b5aa96-c7d6f9-7296aa-0c1670-805a64')
 VETMANAGER_URL = os.getenv('VETMANAGER_URL', 'https://drug14.vetmanager2.ru')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 921853682))
 
-# Промокоды и скидки
-PROMO_DISCOUNT = 300  # 300 рублей скидки
-PROMO_PREFIX = "VET"  # Префикс промокода: VET123456
-
-# Хранилище сессий (в проде нужно Redis/БД)
+# Хранилище сессий (временное, для прода нужно Redis)
 user_sessions = {}
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_vetmanager_data(endpoint, params=None):
@@ -36,7 +34,7 @@ def get_vetmanager_data(endpoint, params=None):
         if response.status_code == 200:
             return response.json().get("data", [])
     except Exception as e:
-        print(f"Vetmanager error: {e}")
+        logger.error(f"Vetmanager error: {e}")
     
     return []
 
@@ -44,6 +42,9 @@ def find_client_by_phone(phone):
     """Ищет клиента по номеру телефона"""
     # Очищаем номер от лишних символов
     phone_clean = ''.join(filter(str.isdigit, str(phone)))
+    
+    if len(phone_clean) < 10:
+        return None
     
     # Ищем в Vetmanager
     clients = get_vetmanager_data("clients", {"filter[phone]": phone_clean})
@@ -54,31 +55,32 @@ def find_client_by_phone(phone):
             'id': client.get('id'),
             'name': f"{client.get('firstName', '')} {client.get('lastName', '')}".strip(),
             'phone': phone_clean,
-            'email': client.get('email', ''),
-            'existing_promo': get_client_promo(client.get('id'))
+            'email': client.get('email', '')
         }
     
     return None
 
-def get_client_promo(client_id):
-    """Получает промокод клиента из customFields"""
+def client_has_telegram(client_id):
+    """Проверяет, есть ли у клиента Telegram ID"""
     client_data = get_vetmanager_data(f"client/{client_id}")
     
     if client_data and 'customFields' in client_data:
         for field in client_data['customFields']:
-            if field.get('fieldName') in ['promo_code', 'Промокод', 'Promo']:
-                return field.get('fieldValue')
-    
-    return None
+            if field.get('fieldName') == 'Telegram':
+                return True
+    return False
 
-def save_telegram_and_promo(client_id, telegram_id, promo_code):
-    """Сохраняет Telegram ID и промокод в Vetmanager"""
+def save_telegram_id(client_id, telegram_id):
+    """Сохраняет Telegram ID в Vetmanager"""
     update_url = f"{VETMANAGER_URL}/api/client/{client_id}"
     headers = {"X-User-Token": VETMANAGER_KEY}
     
     try:
         # Получаем текущие данные клиента
         response = requests.get(update_url, headers=headers)
+        if response.status_code != 200:
+            return False
+            
         client_data = response.json().get('data', {})
         
         # Добавляем/обновляем customFields
@@ -91,8 +93,7 @@ def save_telegram_and_promo(client_id, telegram_id, promo_code):
             if field.get('fieldName') == 'Telegram':
                 field['fieldValue'] = str(telegram_id)
                 telegram_field_exists = True
-            elif field.get('fieldName') == 'promo_code':
-                field['fieldValue'] = promo_code
+                break
         
         if not telegram_field_exists:
             client_data['customFields'].append({
@@ -101,25 +102,13 @@ def save_telegram_and_promo(client_id, telegram_id, promo_code):
                 'fieldType': 'text'
             })
         
-        # Добавляем промокод если нет
-        if not any(f.get('fieldName') == 'promo_code' for f in client_data['customFields']):
-            client_data['customFields'].append({
-                'fieldName': 'promo_code',
-                'fieldValue': promo_code,
-                'fieldType': 'text'
-            })
-        
         # Сохраняем изменения
         update_response = requests.put(update_url, headers=headers, json=client_data)
         return update_response.status_code == 200
         
     except Exception as e:
-        print(f"Save error: {e}")
+        logger.error(f"Save error: {e}")
         return False
-
-def generate_promo_code():
-    """Генерирует уникальный промокод"""
-    return PROMO_PREFIX + ''.join(random.choices(string.digits, k=6))
 
 def send_telegram_message(chat_id, text, parse_mode='HTML'):
     """Отправляет сообщение в Telegram"""
@@ -134,7 +123,8 @@ def send_telegram_message(chat_id, text, parse_mode='HTML'):
     try:
         response = requests.post(url, json=payload, timeout=10)
         return response.json().get("ok", False)
-    except:
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
         return False
 
 # ========== ТЕЛЕГРАМ БОТ WEBHOOK ==========
@@ -151,12 +141,10 @@ def telegram_webhook():
         # Обработка команд
         if text == '/start':
             handle_start(chat_id)
-        elif text == '/promo':
-            handle_promo(chat_id)
         elif chat_id in user_sessions and user_sessions[chat_id].get('waiting_for_phone'):
             handle_phone_input(chat_id, text)
         else:
-            send_telegram_message(chat_id, "Используйте /start для начала")
+            send_telegram_message(chat_id, "Для начала работы отправьте /start")
     
     return 'OK'
 
@@ -167,29 +155,27 @@ def handle_start(chat_id):
         'step': 'phone_input'
     }
     
-    welcome_text = f"""🎉 <b>Добро пожаловать в VetClinic!</b>
+    welcome_text = """🎉 <b>ДОБРО ПОЖАЛОВАТЬ В VIP-КЛУБ VETCLINIC!</b>
 
-Получите <b>{PROMO_DISCOUNT}₽ скидку</b> на следующий визит в ветклинику!
+Подключите Telegram-уведомления и получайте:
 
-<b>Как это работает:</b>
-1. Введите номер телефона, который указан в вашей карте
-2. Система проверит вас в базе клиники
-3. Вы получите персональный промокод
-4. Покажите промокод на ресепшене при оплате
+<b>🔥 ЭКСКЛЮЗИВНЫЕ ПРЕИМУЩЕСТВА:</b>
+1️⃣ <b>Автонапоминания</b> — никогда не пропустите визит
+2️⃣ <b>Первыми узнавайте об акциях</b> — скидки, распродажи, спецпредложения
+3️⃣ <b>Напоминания о прививках</b> — здоровье питомца под контролем
+4️⃣ <b>Экспресс-запись</b> — бронируйте время в 2 клика
+5️⃣ <b>Быстрая связь с врачом</b> — задавайте вопросы в чате
 
-💡 <i>После регистрации вы будете получать:</i>
-• Напоминания о визитах
-• Уведомления о прививках
-• Специальные акции
+<b>📱 КАК ПОДКЛЮЧИТЬ:</b>
+1. Введите номер телефона из вашей карты
+2. Получите подтверждение подключения
+3. Наслаждайтесь заботой о питомце!
 
-<b>Введите ваш номер телефона:</b>"""
+<b>💡 ЭТО БЕСПЛАТНО И СОХРАНЯЕТ ВАШЕ ВРЕМЯ!</b>
+
+Введите ваш номер телефона:"""
     
     send_telegram_message(chat_id, welcome_text)
-
-def handle_promo(chat_id):
-    """Проверка существующего промокода"""
-    # Можно добавить проверку по chat_id в базе
-    send_telegram_message(chat_id, "Используйте /start для получения промокода")
 
 def handle_phone_input(chat_id, phone_input):
     """Обработка введенного номера телефона"""
@@ -203,65 +189,92 @@ def handle_phone_input(chat_id, phone_input):
         send_telegram_message(
             chat_id,
             "❌ <b>Клиент не найден</b>\n\n"
-            "Проверьте правильность номера или обратитесь на ресепшн клиники."
+            "Возможные причины:\n"
+            "• Номер введен неправильно\n"
+            "• Вы не наш клиент\n"
+            "• Обратитесь на ресепшн для уточнения\n\n"
+            "Попробуйте снова: /start"
         )
         return
     
-    # Проверяем, есть ли уже промокод
-    if client['existing_promo']:
+    # Проверяем, есть ли уже Telegram ID
+    if client_has_telegram(client['id']):
         send_telegram_message(
             chat_id,
-            f"✅ <b>Вы уже зарегистрированы!</b>\n\n"
-            f"Ваш промокод: <code>{client['existing_promo']}</code>\n"
-            f"Скидка: {PROMO_DISCOUNT}₽\n\n"
-            f"<i>Покажите этот код на ресепшене</i> 🏥"
+            f"✅ <b>Вы уже в VIP-клубе!</b>\n\n"
+            f"Рады снова видеть, {client['name']}! 🐾\n\n"
+            f"<i>Вы уже получаете:</i>\n"
+            f"• Напоминания о визитах\n"
+            f"• Специальные предложения\n"
+            f"• Важные уведомления\n\n"
+            f"Спасибо, что с нами!"
         )
         return
     
-    # Генерируем новый промокод
-    promo_code = generate_promo_code()
-    
-    # Сохраняем в Vetmanager
-    success = save_telegram_and_promo(client['id'], chat_id, promo_code)
+    # Сохраняем Telegram ID в Vetmanager
+    success = save_telegram_id(client['id'], chat_id)
     
     if success:
-        # Сообщение клиенту
-        client_message = f"""✅ <b>Регистрация успешна!</b>
+        # Поздравительное сообщение клиенту
+        client_message = f"""🎊 <b>ПОЗДРАВЛЯЕМ! ВЫ В VIP-КЛУБЕ!</b>
 
-Добро пожаловать, {client['name']}!
+Добро пожаловать, {client['name']}! 🐕🐈
 
-<b>Ваш промокод:</b> <code>{promo_code}</code>
-<b>Скидка:</b> {PROMO_DISCOUNT}₽ на следующий визит
+<b>✅ ВАШИ НОВЫЕ ВОЗМОЖНОСТИ:</b>
 
-💡 <i>Что теперь:</i>
-1. Покажите промокод на ресепшене при оплате
-2. Получайте напоминания о визитах
-3. Будьте в курсе акций и важных уведомлений
+1. <b>АВТОНАПОМИНАНИЯ</b>
+   • За день до визита
+   • За 2 часа до визита
+   • О прививках и процедурах
 
-Спасибо, что с нами! 🐾"""
+2. <b>ЭКСКЛЮЗИВНЫЕ АКЦИИ</b>
+   • Первыми узнаете о скидках
+   • Спецпредложения только для VIP
+   • Бонусы за рекомендации
+
+3. <b>БЫСТРАЯ СВЯЗЬ</b>
+   • Экспресс-запись через бота
+   • Ответы на частые вопросы
+   • Экстренные уведомления
+
+4. <b>ЗАБОТА О ПИТОМЦЕ</b>
+   • Напоминания о прививках
+   • Рекомендации по уходу
+   • История посещений
+
+<b>🎯 ЧТО ДЕЛАТЬ ДАЛЬШЕ?</b>
+1. Ждите напоминание перед следующим визитом
+2. Следите за акциями в этом чате
+3. Для записи напишите: "Запись"
+
+<b>💬 ГЛАВНОЕ ПРАВИЛО:</b>
+Мы пишем только по делу и не спамим!
+
+С заботой о вашем питомце,
+Команда VetClinic 🏥"""
         
         send_telegram_message(chat_id, client_message)
         
         # Уведомление администратору
-        admin_message = f"""📱 <b>НОВЫЙ КЛИЕНТ В TELEGRAM</b>
+        admin_message = f"""📱 <b>НОВЫЙ VIP-КЛИЕНТ</b>
 
 👤 Имя: {client['name']}
 📞 Телефон: {client['phone']}
 🆔 Telegram ID: {chat_id}
-🎫 Промокод: {promo_code}
-💰 Скидка: {PROMO_DISCOUNT}₽
+⭐ Статус: VIP-уведомления
+📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+<b>Клиент подключен к системе уведомлений!</b>"""
         
         send_telegram_message(ADMIN_ID, admin_message)
         
-        # Логируем
-        print(f"New client: {client['name']}, Promo: {promo_code}")
+        logger.info(f"Новый VIP-клиент: {client['name']}, ID: {chat_id}")
     else:
         send_telegram_message(
             chat_id,
-            "❌ <b>Ошибка регистрации</b>\n\n"
-            "Пожалуйста, обратитесь на ресепшн клиники."
+            "⚠️ <b>Техническая ошибка</b>\n\n"
+            "Пожалуйста, сообщите на ресепшн о проблеме.\n"
+            "Мы вас обязательно подключим!"
         )
 
 # ========== АВТОМАТИЧЕСКИЕ ФУНКЦИИ ==========
@@ -272,12 +285,16 @@ def check_and_send_reminders():
     # Получаем завтрашние записи
     appointments = get_vetmanager_data("appointments", {
         "filter[date]": tomorrow,
-        "limit": 50
+        "limit": 100
     })
     
     if not appointments:
+        logger.info(f"На {tomorrow} записей не найдено")
         return
     
+    logger.info(f"Найдено записей на завтра: {len(appointments)}")
+    
+    sent_count = 0
     for app in appointments:
         client_id = app.get('client_id')
         app_time = app.get('time', '10:00')
@@ -297,18 +314,39 @@ def check_and_send_reminders():
                     break
         
         if telegram_id:
+            # Получаем имя клиента
+            client_name = f"{client_data.get('firstName', '')} {client_data.get('lastName', '')}".strip()
+            if not client_name:
+                client_name = "Уважаемый клиент"
+            
             # Отправляем напоминание
             reminder = f"""🔔 <b>НАПОМИНАНИЕ О ВИЗИТЕ</b>
 
-Добрый день! Напоминаем, что завтра {tomorrow} в {app_time}
+Добрый день, {client_name}! 
+
+Напоминаем, что <b>завтра {tomorrow} в {app_time}</b>
 у вас запись в ветклинике с {pet_name}.
 
-📍 Адрес: [Ваш адрес]
-📞 Телефон: [Ваш телефон]
+📍 <b>Адрес:</b> [Ваш адрес клиники]
+📞 <b>Телефон:</b> [Ваш телефон]
 
-<i>Пожалуйста, подтвердите визит ответным сообщением!</i>"""
+<i>Пожалуйста, подтвердите визит ответным сообщением "Подтверждаю"!</i>"""
             
-            send_telegram_message(telegram_id, reminder)
+            if send_telegram_message(telegram_id, reminder):
+                sent_count += 1
+                logger.info(f"Напоминание отправлено: {client_name}, {app_time}")
+    
+    # Отчет администратору
+    if sent_count > 0:
+        report = f"""📊 <b>ОТЧЕТ ПО НАПОМИНАНИЯМ</b>
+
+📅 Дата: {tomorrow}
+✅ Отправлено: {sent_count} напоминаний
+📋 Всего записей: {len(appointments)}
+
+Время отправки: {datetime.now().strftime('%H:%M')}"""
+        
+        send_telegram_message(ADMIN_ID, report)
 
 # ========== WEB ИНТЕРФЕЙС ДЛЯ АДМИНА ==========
 @app.route('/')
@@ -316,37 +354,55 @@ def home():
     return """
     <html>
     <head>
-        <title>VetClinic Telegram Bot</title>
+        <title>🏥 VetClinic VIP Telegram Bot</title>
         <style>
-            body { font-family: Arial; margin: 40px; }
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f8f9fa; }
             .container { max-width: 800px; margin: 0 auto; }
-            .card { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 10px; }
-            .btn { display: inline-block; padding: 10px 20px; background: #0088cc; 
-                   color: white; text-decoration: none; border-radius: 5px; }
+            .card { background: white; padding: 25px; margin: 20px 0; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .btn { display: inline-block; padding: 12px 24px; background: #0088cc; 
+                   color: white; text-decoration: none; border-radius: 8px; font-weight: bold; }
+            .btn:hover { background: #006699; }
+            h1 { color: #2c3e50; }
+            .status { color: #27ae60; font-weight: bold; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🏥 VetClinic Telegram Bot</h1>
+            <h1>🏥 VetClinic VIP Telegram Bot</h1>
             
             <div class="card">
-                <h2>🤖 Бот-регистратор</h2>
-                <p>Клиенты получают промокод 300₽ в обмен на Telegram ID</p>
+                <h2>🤖 Бот VIP-уведомлений</h2>
+                <p>Система автоматических напоминаний и эксклюзивных предложений для клиентов</p>
                 <p><strong>Ссылка для клиентов:</strong></p>
-                <p><code>https://t.me/VetClinicHelperBot</code></p>
-                <a href="https://t.me/VetClinicHelperBot" class="btn" target="_blank">Открыть бота</a>
+                <p><code>https://t.me/Fulsim_bot</code></p>
+                <a href="https://t.me/Fulsim_bot" class="btn" target="_blank">🔗 Открыть бота</a>
             </div>
             
             <div class="card">
-                <h2>⚡ Быстрые действия</h2>
-                <p><a href="/send_reminders" class="btn">Отправить напоминания</a></p>
-                <p><a href="/stats" class="btn">Статистика</a></p>
+                <h2>⚡ Управление системой</h2>
+                <p><a href="/send_reminders" class="btn">📨 Отправить напоминания</a></p>
+                <p><a href="/check_webhook" class="btn">🔧 Проверить Webhook</a></p>
+                <p><a href="/health" class="btn">❤️ Проверить здоровье</a></p>
             </div>
             
             <div class="card">
                 <h2>📊 Инструкция для персонала</h2>
-                <p>Говорите клиентам: "Хотите получать напоминания и скидки в Telegram? 
-                Вот наш бот: t.me/VetClinicHelperBot"</p>
+                <p><strong>Что говорить клиентам:</strong></p>
+                <p>"Подключите VIP-уведомления в Telegram! Вы будете получать напоминания о визитах, 
+                первыми узнавать об акциях и никогда не пропустите важную прививку питомца. 
+                Это бесплатно! Просто напишите <code>/start</code> в @Fulsim_bot"</p>
+                
+                <p><strong>Преимущества для клиники:</strong></p>
+                <ul>
+                    <li>Снижение no-show до 50%</li>
+                    <li>Прямой канал связи с клиентами</li>
+                    <li>Автоматические напоминания</li>
+                    <li>Повышение лояльности</li>
+                </ul>
+            </div>
+            
+            <div class="card">
+                <p class="status">✅ Система работает | Последнее обновление: """ + datetime.now().strftime('%d.%m.%Y %H:%M') + """</p>
             </div>
         </div>
     </body>
@@ -357,9 +413,38 @@ def home():
 def manual_reminders():
     """Ручная отправка напоминаний"""
     Thread(target=check_and_send_reminders).start()
-    return "Напоминания отправляются..."
+    return """
+    <html>
+    <body style="font-family: Arial; padding: 40px;">
+        <h1>✅ Напоминания отправляются...</h1>
+        <p>Проверьте Telegram для получения отчета.</p>
+        <p><a href="/">Вернуться на главную</a></p>
+    </body>
+    </html>
+    """
 
-# ========== ЗАПУСК ==========
+@app.route('/health')
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "vetclinic-vip-bot",
+        "timestamp": datetime.now().isoformat(),
+        "telegram_configured": bool(TELEGRAM_TOKEN),
+        "vetmanager_connected": bool(VETMANAGER_KEY),
+        "webhook_url": "https://vetmanager-bot-1.onrender.com/webhook"
+    }
+
+@app.route('/check_webhook')
+def check_webhook():
+    """Проверка статуса webhook"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo"
+    try:
+        response = requests.get(url)
+        return response.json()
+    except:
+        return {"error": "Cannot check webhook"}
+
+# ========== ЗАПУСК СИСТЕМЫ ==========
 def setup_webhook():
     """Настройка webhook для Telegram"""
     webhook_url = f"https://vetmanager-bot-1.onrender.com/webhook"
@@ -367,28 +452,35 @@ def setup_webhook():
     
     try:
         response = requests.get(set_url)
-        print(f"Webhook setup: {response.json()}")
+        logger.info(f"Webhook setup: {response.json()}")
     except Exception as e:
-        print(f"Webhook error: {e}")
+        logger.error(f"Webhook error: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Запуск VetClinic Telegram Bot...")
+    logger.info("🚀 Запуск VetClinic VIP Telegram Bot...")
     
     # Настраиваем webhook
     setup_webhook()
     
     # Отправляем сообщение о запуске
-    startup_msg = f"""🚀 <b>БОТ-РЕГИСТРАТОР ЗАПУЩЕН</b>
+    startup_msg = f"""🚀 <b>VIP БОТ ЗАПУЩЕН</b>
 
-✅ Система готова собирать Telegram ID клиентов
-🎫 Промокод: {PROMO_DISCOUNT}₽ скидки
-🔗 Ссылка: t.me/VetClinicHelperBot
+✅ Система VIP-уведомлений активирована
+🏥 Клиника: VetClinic
+🔗 Бот: @Fulsim_bot
 📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-Клиенты могут регистрироваться и получать промокоды!"""
+<b>ВОЗМОЖНОСТИ СИСТЕМЫ:</b>
+• Автоматические напоминания о визитах
+• VIP-предложения для клиентов
+• Уведомления о прививках
+• Снижение no-show
+
+Готов к работе! 🐾"""
     
     send_telegram_message(ADMIN_ID, startup_msg)
     
-    # Запускаем Flask
+    # Запускаем Flask сервер
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
+```
