@@ -1,1 +1,2 @@
-echo "requests>=2.31.0" > requirements.txt
+requests>=2.31.0
+Flask>=2.3.0
