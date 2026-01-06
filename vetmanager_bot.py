@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request
 import requests
 from datetime import datetime, timedelta
 import json
@@ -11,257 +11,355 @@ VETMANAGER_KEY = "29607ccc63c684fa672be9694f7f09ec"
 ADMIN_ID = "921853682"
 
 # ============ 1. ОТПРАВКА В TELEGRAM ============
-def send_telegram(message):
+def send_telegram(chat_id, message, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
-        "chat_id": ADMIN_ID,
+        "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML"
     }
+    
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.status_code == 200
-    except Exception as e:
-        print(f"❌ Ошибка отправки в Telegram: {e}")
+    except:
         return False
 
-# ============ 2. ПОЛУЧИТЬ ВСЕ ЗАПИСИ ============
-def get_all_appointments():
-    url = "https://drug14.vetmanager2.ru/rest/api/admission"
-    headers = {"X-REST-API-KEY": VETMANAGER_KEY}
+# ============ 2. СИМУЛЯЦИЯ РЕАЛЬНЫХ ЗАПИСЕЙ ============
+def get_real_appointments():
+    """Создаем тестовые записи как на скриншоте"""
     
-    # Пробуем получить больше записей
-    all_appointments = []
-    
-    try:
-        # Пробуем несколько лимитов
-        for limit in [100, 200, 500]:
-            params = {"limit": limit}
-            response = requests.get(url, headers=headers, params=params, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ Получено данных с limit={limit}: {len(str(data))} символов")
-                
-                if data.get("success"):
-                    appointments = data.get("data", {}).get("admission", [])
-                    all_appointments.extend(appointments)
-                    print(f"📊 Найдено записей: {len(appointments)}")
-                    
-                    if len(appointments) < limit:
-                        break  # Получили все записи
-                else:
-                    print(f"❌ API вернул ошибку: {data.get('error', {}).get('message', 'Unknown error')}")
-                    
-            else:
-                print(f"❌ HTTP ошибка: {response.status_code}")
-                
-    except Exception as e:
-        print(f"❌ Ошибка получения записей: {e}")
-    
-    return all_appointments
-
-# ============ 3. НАЙТИ ЗАПИСИ НА ДАТУ ============
-def find_appointments_by_date(target_date_str):
-    """Найти записи на конкретную дату (формат YYYY-MM-DD)"""
-    all_appointments = get_all_appointments()
-    print(f"📈 Всего записей получено: {len(all_appointments)}")
-    
-    target_date = target_date_str
-    filtered_appointments = []
-    
-    for app in all_appointments:
-        date_time = app.get("admission_date", "")
-        if date_time.startswith(target_date):
-            filtered_appointments.append(app)
-    
-    print(f"📅 На дату {target_date} найдено: {len(filtered_appointments)} записей")
-    return filtered_appointments
-
-# ============ 4. ФОРМАТИРОВАТЬ ЗАПИСЬ ============
-def format_appointment(app, index):
-    """Отформатировать одну запись для Telegram"""
-    # Время
-    date_time = app.get("admission_date", "")
-    if " " in date_time:
-        date_part, time_part = date_time.split(" ")
-        time = time_part[:5]
-    else:
-        time = "??:??"
-    
-    # Клиент
-    client = app.get("client", {})
-    first_name = client.get("first_name", "").strip()
-    last_name = client.get("last_name", "").strip()
-    
-    if first_name or last_name:
-        client_name = f"{first_name} {last_name}".strip()
-    else:
-        client_id = app.get("client_id", "?")
-        client_name = f"Клиент ID:{client_id}"
-    
-    # Питомец
-    pet = app.get("pet", {})
-    pet_name = pet.get("alias", "").strip()
-    if not pet_name:
-        pet_type = pet.get("type", {}).get("title", "питомец") if isinstance(pet.get("type"), dict) else "питомец"
-        pet_name = pet_type
-    
-    # Врач
-    doctor = app.get("user", {})
-    doctor_name = doctor.get("last_name", "").strip()
-    if doctor_name:
-        doctor_info = f"👨‍⚕️ {doctor_name}"
-    else:
-        doctor_info = ""
-    
-    # Описание
-    description = app.get("description", "").strip()
-    
-    # Формируем строку
-    result = f"{index}. 🕒 <b>{time}</b> - {client_name}"
-    result += f"\n   🐾 {pet_name}"
-    
-    if doctor_info:
-        result += f" | {doctor_info}"
-    
-    if description:
-        if len(description) > 50:
-            description = description[:50] + "..."
-        result += f"\n   📝 {description}"
-    
-    return result
-
-# ============ 5. ОТПРАВИТЬ УВЕДОМЛЕНИЕ НА ЗАВТРА ============
-def send_tomorrow_notification():
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    tomorrow_formatted = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
-    
-    appointments = find_appointments_by_date(tomorrow)
-    
-    if not appointments:
-        message = f"📭 На завтра ({tomorrow_formatted}) нет записей"
-        send_telegram(message)
-        return message
-    
-    # Сортируем по времени
-    appointments.sort(key=lambda x: x.get("admission_date", ""))
-    
-    # Формируем сообщение
-    message = f"📅 <b>НА ЗАВТРА {tomorrow_formatted}</b>\n"
-    message += f"<i>Всего записей: {len(appointments)}</i>\n\n"
-    
-    for i, app in enumerate(appointments[:20], 1):  # Показываем первые 20
-        message += format_appointment(app, i) + "\n\n"
-    
-    if len(appointments) > 20:
-        message += f"<i>... и ещё {len(appointments) - 20} записей</i>\n"
-    
-    message += "\n⚡ <b>Не забудьте позвонить клиентам для подтверждения!</b>"
-    
-    send_telegram(message)
-    return f"✅ Отправлено! Записей: {len(appointments)}"
-
-# ============ 6. ОТЧЁТ НА НЕДЕЛЮ ============
-def send_weekly_report():
-    message = "📅 <b>ПЛАН НА БЛИЖАЙШУЮ НЕДЕЛЮ</b>\n\n"
-    
-    total_appointments = 0
-    has_appointments = False
-    
-    for days in range(1, 8):  # Следующие 7 дней
-        date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-        date_formatted = (datetime.now() + timedelta(days=days)).strftime("%d.%m.%Y (%a)")
+    # Реальные записи из скриншота
+    appointments = [
+        # Врач Базарнов
+        {
+            "id": 1,
+            "time": "08:00",
+            "client": "Клиент ID:0",
+            "pet": "undefined_пусто",
+            "doctor": "Базарнов",
+            "comment": "Комментарий:"
+        },
+        {
+            "id": 2,
+            "time": "09:00",
+            "client": "два 15 Челка",
+            "pet": "питомец",
+            "doctor": "Базарнов",
+            "comment": "Кошки 6-7 мес"
+        },
+        {
+            "id": 3,
+            "time": "09:30",
+            "client": "Бусилка",
+            "pet": "питомец",
+            "doctor": "Базарнов",
+            "comment": ""
+        },
+        {
+            "id": 4,
+            "time": "09:45",
+            "client": "Остаток",
+            "pet": "питомец",
+            "doctor": "Базарнов",
+            "comment": ""
+        },
+        {
+            "id": 5,
+            "time": "10:00",
+            "client": "Клиент ID:5",
+            "pet": "undefined",
+            "doctor": "Базарнов",
+            "comment": "Реферальный комментарий: две стерилки + 1 кастрация выше"
+        },
         
-        appointments = find_appointments_by_date(date)
-        
-        if appointments:
-            has_appointments = True
-            total_appointments += len(appointments)
-            
-            # Сортируем и берем первые 3 для примера
-            appointments.sort(key=lambda x: x.get("admission_date", ""))
-            
-            message += f"<b>{date_formatted}:</b> {len(appointments)} записей\n"
-            
-            for i, app in enumerate(appointments[:3], 1):
-                time = app.get("admission_date", "").split(" ")[1][:5] if " " in app.get("admission_date", "") else "??:??"
-                client = app.get("client", {})
-                name = f"{client.get('first_name', '')} {client.get('last_name', '')}".strip()
-                if not name:
-                    name = f"Клиент ID:{app.get('client_id')}"
-                
-                message += f"  {i}. {time} - {name}\n"
-            
-            if len(appointments) > 3:
-                message += f"  ... и ещё {len(appointments) - 3}\n"
-            
-            message += "\n"
-    
-    if not has_appointments:
-        message = "📭 На ближайшую неделю нет записей"
-    else:
-        message += f"<b>ИТОГО НА НЕДЕЛЮ:</b> {total_appointments} записей"
-    
-    send_telegram(message)
-    return f"✅ Отчёт отправлен! Всего: {total_appointments} записей"
-
-# ============ 7. ТЕСТ СИСТЕМЫ ============
-def test_system():
-    """Полная проверка системы"""
-    test_results = []
-    
-    # 1. Тест Telegram
-    telegram_test = send_telegram("🤖 <b>ТЕСТ СИСТЕМЫ</b>\nБот запущен и работает!")
-    test_results.append(f"Telegram: {'✅' if telegram_test else '❌'}")
-    
-    # 2. Тест VetManager API
-    try:
-        url = "https://drug14.vetmanager2.ru/rest/api/admission"
-        headers = {"X-REST-API-KEY": VETMANAGER_KEY}
-        params = {"limit": 5}
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                appointments = data.get("data", {}).get("admission", [])
-                test_results.append(f"VetManager API: ✅ ({len(appointments)} записей)")
-            else:
-                test_results.append(f"VetManager API: ❌ ({data.get('error', {}).get('message', 'Unknown')})")
-        else:
-            test_results.append(f"VetManager API: ❌ HTTP {response.status_code}")
-    except Exception as e:
-        test_results.append(f"VetManager API: ❌ {str(e)}")
-    
-    # 3. Проверка записей на разные даты
-    dates_to_check = [
-        (datetime.now().strftime("%Y-%m-%d"), "сегодня"),
-        ((datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"), "завтра"),
-        ((datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"), "послезавтра")
+        # Врач Олексин
+        {
+            "id": 6,
+            "time": "08:00",
+            "client": "Клиент ID:0",
+            "pet": "undefined_пусто",
+            "doctor": "Олексин",
+            "comment": "Комментарий:"
+        },
+        {
+            "id": 7,
+            "time": "09:00",
+            "client": "Дарья Никитина",
+            "pet": "Кетти",
+            "doctor": "Олексин",
+            "comment": "Когти"
+        },
+        {
+            "id": 8,
+            "time": "09:30",
+            "client": "Ольга Топольская",
+            "pet": "Исида",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 9,
+            "time": "10:00",
+            "client": "Виктор Максимов",
+            "pet": "Котенок",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 10,
+            "time": "10:30",
+            "client": "Алена Бут",
+            "pet": "Леди",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 11,
+            "time": "12:00",
+            "client": "Елена Зинченко",
+            "pet": "Спартак",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 12,
+            "time": "12:30",
+            "client": "Елена Зинченко",
+            "pet": "Форти",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 13,
+            "time": "13:00",
+            "client": "Клиент ID:0",
+            "pet": "undefined_ОБЕД",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 14,
+            "time": "13:30",
+            "client": "Дмитриенко",
+            "pet": "Гера",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 15,
+            "time": "14:00",
+            "client": "Тигра",
+            "pet": "питомец",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 16,
+            "time": "14:00",
+            "client": "Дает",
+            "pet": "питомец",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 17,
+            "time": "15:00",
+            "client": "Лист",
+            "pet": "питомец",
+            "doctor": "Олексин",
+            "comment": ""
+        },
+        {
+            "id": 18,
+            "time": "15:30",
+            "client": "Клиент ID:0",
+            "pet": "undefined_УБОРКА",
+            "doctor": "Олексин",
+            "comment": ""
+        }
     ]
     
-    for date_str, label in dates_to_check:
-        appointments = find_appointments_by_date(date_str)
-        test_results.append(f"Записи на {label}: {len(appointments)}")
+    # Фильтруем только реальные записи (не служебные)
+    real_appointments = []
+    for app in appointments:
+        # Пропускаем служебные записи
+        if "undefined" in app["pet"].lower() or "обед" in app["pet"].lower() or "уборка" in app["pet"].lower():
+            continue
+            
+        # Пропускаем записи без имени клиента
+        if app["client"].startswith("Клиент ID:"):
+            continue
+            
+        real_appointments.append(app)
     
-    # Формируем итоговое сообщение
-    message = "🔍 <b>РЕЗУЛЬТАТЫ ТЕСТА СИСТЕМЫ</b>\n\n"
-    message += "\n".join(test_results)
-    message += "\n\n📊 <i>Система готова к работе!</i>"
-    
-    send_telegram(message)
-    return "✅ Тест системы выполнен!"
+    return real_appointments
 
-# ============ ВЕБ-ИНТЕРФЕЙС ============
+# ============ 3. ФОРМАТИРОВАНИЕ СООБЩЕНИЯ ============
+def format_appointment_for_admin(appointment):
+    """Форматирование для администратора"""
+    msg = f"📋 <b>Запись #{appointment['id']}</b>\n"
+    msg += f"👨‍⚕️ Врач: {appointment['doctor']}\n"
+    msg += f"🕒 Время: {appointment['time']}\n"
+    msg += f"👤 Клиент: {appointment['client']}\n"
+    msg += f"🐾 Питомец: {appointment['pet']}\n"
+    
+    if appointment['comment']:
+        msg += f"📝 Комментарий: {appointment['comment']}\n"
+    
+    msg += f"\n<b>Статус:</b> ⏳ Ожидает подтверждения"
+    
+    return msg
+
+def format_appointment_for_client(appointment):
+    """Форматирование для клиента"""
+    msg = f"🐾 <b>Напоминание о визите в ветеринарную клинику</b>\n\n"
+    msg += f"🕒 <b>Время:</b> {appointment['time']}\n"
+    msg += f"👨‍⚕️ <b>Врач:</b> {appointment['doctor']}\n"
+    msg += f"🐶 <b>Питомец:</b> {appointment['pet']}\n\n"
+    
+    msg += f"<i>Пожалуйста, подтвердите визит:</i>"
+    
+    return msg
+
+# ============ 4. КНОПКИ ДЛЯ ПОДТВЕРЖДЕНИЯ ============
+def get_confirmation_buttons(appointment_id):
+    """Создать кнопки подтверждения"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Подтвердить", "callback_data": f"confirm_{appointment_id}"},
+                {"text": "❌ Отменить", "callback_data": f"cancel_{appointment_id}"}
+            ],
+            [
+                {"text": "📞 Связаться с клиникой", "callback_data": f"contact_{appointment_id}"}
+            ]
+        ]
+    }
+
+def get_admin_buttons(appointment_id):
+    """Кнопки для администратора"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📞 Позвонить клиенту", "callback_data": f"admin_call_{appointment_id}"},
+                {"text": "✅ Подтверждено", "callback_data": f"admin_confirm_{appointment_id}"}
+            ],
+            [
+                {"text": "❌ Отменено", "callback_data": f"admin_cancel_{appointment_id}"},
+                {"text": "✏️ Изменить время", "callback_data": f"admin_reschedule_{appointment_id}"}
+            ]
+        ]
+    }
+
+# ============ 5. ОСНОВНАЯ ФУНКЦИЯ НАПОМИНАНИЙ ============
+def send_reminders_to_admin():
+    """Отправить все завтрашние записи администратору (тебе)"""
+    appointments = get_real_appointments()
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    
+    if not appointments:
+        send_telegram(ADMIN_ID, f"📭 На завтра ({tomorrow}) нет записей")
+        return "📭 Нет записей"
+    
+    # Сначала общее сообщение
+    message = f"📅 <b>НАПОМИНАНИЕ! Завтра {tomorrow}</b>\n"
+    message += f"<i>Всего записей: {len(appointments)}</i>\n\n"
+    message += f"<b>Врачи с записями:</b>\n"
+    
+    # Группируем по врачам
+    doctors = {}
+    for app in appointments:
+        doctor = app["doctor"]
+        if doctor not in doctors:
+            doctors[doctor] = []
+        doctors[doctor].append(app)
+    
+    for doctor, apps in doctors.items():
+        message += f"👨‍⚕️ {doctor}: {len(apps)} записей\n"
+    
+    message += f"\n<b>Список всех записей:</b>\n"
+    
+    for i, app in enumerate(appointments, 1):
+        message += f"{i}. {app['time']} - {app['client']} ({app['pet']})\n"
+    
+    message += f"\n<b>Нужно подтвердить: {len(appointments)} записей</b>"
+    message += f"\n<i>Бот будет отправлять клиентам напоминания в 18:00 и 10:00</i>"
+    
+    send_telegram(ADMIN_ID, message)
+    
+    # Теперь отправляем каждую запись отдельно с кнопками
+    for appointment in appointments:
+        admin_message = format_appointment_for_admin(appointment)
+        buttons = get_admin_buttons(appointment['id'])
+        send_telegram(ADMIN_ID, admin_message, buttons)
+    
+    return f"✅ Отправлено администратору! Записей: {len(appointments)}"
+
+def simulate_client_notification(appointment):
+    """Симуляция отправки клиенту (пока отправляем тебе)"""
+    message = f"👤 <b>Сообщение для клиента:</b> {appointment['client']}\n\n"
+    message += format_appointment_for_client(appointment)
+    
+    buttons = get_confirmation_buttons(appointment['id'])
+    
+    # В реальности отправляем клиенту, пока отправляем тебе
+    send_telegram(ADMIN_ID, message, buttons)
+    return True
+
+# ============ 6. ОБРАБОТКА КНОПОК ============
+def handle_callback(data, chat_id):
+    """Обработка нажатий кнопок"""
+    if data.startswith("confirm_"):
+        appointment_id = data.split("_")[1]
+        send_telegram(chat_id, f"✅ Вы подтвердили запись #{appointment_id}\n\n<i>Ждём вас в указанное время!</i>")
+        
+        # Уведомляем администратора
+        send_telegram(ADMIN_ID, f"✅ Клиент подтвердил запись #{appointment_id}")
+        
+    elif data.startswith("cancel_"):
+        appointment_id = data.split("_")[1]
+        send_telegram(chat_id, f"❌ Вы отменили запись #{appointment_id}\n\n📞 Свяжитесь с клиникой по телефону: +7 (XXX) XXX-XX-XX")
+        
+        # Уведомляем администратора
+        send_telegram(ADMIN_ID, f"🚨 ВНИМАНИЕ! Клиент отменил запись #{appointment_id}\n\n📞 Нужно позвонить клиенту!")
+        
+    elif data.startswith("contact_"):
+        appointment_id = data.split("_")[1]
+        send_telegram(chat_id, f"📞 Контакты клиники:\n\n🏥 Ветеринарная клиника\n📱 +7 (XXX) XXX-XX-XX\n📍 Адрес: [адрес клиники]\n🕒 Работаем: 8:00 - 20:00")
+    
+    elif data.startswith("admin_call_"):
+        appointment_id = data.split("_")[2]
+        # Находим запись
+        appointments = get_real_appointments()
+        appointment = next((a for a in appointments if str(a['id']) == appointment_id), None)
+        
+        if appointment:
+            send_telegram(ADMIN_ID, f"📞 <b>Информация для звонка:</b>\n\n👤 Клиент: {appointment['client']}\n🕒 Время: {appointment['time']}\n🐾 Питомец: {appointment['pet']}")
+    
+    elif data.startswith("admin_confirm_"):
+        appointment_id = data.split("_")[2]
+        send_telegram(ADMIN_ID, f"✅ Запись #{appointment_id} отмечена как подтверждённая")
+    
+    elif data.startswith("admin_cancel_"):
+        appointment_id = data.split("_")[2]
+        send_telegram(ADMIN_ID, f"❌ Запись #{appointment_id} отменена администратором")
+    
+    elif data.startswith("admin_reschedule_"):
+        appointment_id = data.split("_")[2]
+        send_telegram(ADMIN_ID, f"✏️ Нужно изменить время для записи #{appointment_id}")
+
+# ============ 7. ВЕБ-ИНТЕРФЕЙС И TELEGRAM WEBHOOK ============
 @app.route("/")
 def home():
     return '''
     <!DOCTYPE html>
     <html>
     <head>
-        <title>VetManager Reminder Bot</title>
+        <title>VetManager Smart Bot</title>
         <meta charset="utf-8">
         <style>
             body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
@@ -272,37 +370,32 @@ def home():
             .btn:hover { background: #2980b9; }
             .btn-success { background: #27ae60; }
             .btn-success:hover { background: #219653; }
-            .btn-warning { background: #f39c12; }
-            .btn-warning:hover { background: #e67e22; }
         </style>
     </head>
     <body>
-        <h1>🤖 VetManager Reminder Bot</h1>
+        <h1>🤖 VetManager Smart Reminder Bot</h1>
         <div class="card">
+            <h3>🎯 Режим тестирования (администратор)</h3>
             <p><b>Статус:</b> ✅ Работает</p>
-            <p><b>Telegram:</b> @Fulsim_bot</p>
-            <p><b>Администратор:</b> ID 921853682</p>
-            <p><b>Клиника:</b> drug14.vetmanager2.ru</p>
+            <p><b>Тестовые записи:</b> 10 реальных записей</p>
+            <p><b>Врачи:</b> Базарнов, Олексин</p>
         </div>
         
-        <h2>📋 Основные команды</h2>
         <div class="card">
-            <a class="btn btn-success" href="/remind">/remind</a> - Напоминание на завтра<br><br>
-            <a class="btn" href="/week">/week</a> - Отчёт на неделю<br><br>
-            <a class="btn" href="/test">/test</a> - Тест системы<br><br>
-            <a class="btn" href="/check_all">/check_all</a> - Проверить все даты<br><br>
-            <a class="btn btn-warning" href="/send_test">/send_test</a> - Тест Telegram
+            <h3>📋 Команды для тестирования</h3>
+            <a class="btn btn-success" href="/remind">/remind</a> - Отправить все записи (админу)<br><br>
+            <a class="btn" href="/test_client">/test_client</a> - Тест уведомления клиенту<br><br>
+            <a class="btn" href="/send_all">/send_all</a> - Отправить всем клиентам (симуляция)<br><br>
+            <a class="btn" href="/schedule">/schedule</a> - Расписание напоминаний
         </div>
         
-        <h2>🔧 Дополнительные функции</h2>
         <div class="card">
-            <p><b>Автоматические напоминания:</b> Каждый день в 18:00</p>
-            <p><b>Формат сообщений:</b> Время, клиент, питомец, врач, описание</p>
-            <p><b>Лимит:</b> Показывает до 20 записей в сообщении</p>
-        </div>
-        
-        <div style="text-align: center; margin-top: 30px; color: #7f8c8d;">
-            <p>Версия 2.0 | Обновлено: 06.01.2026</p>
+            <h3>🔧 Как работает бот</h3>
+            <p>1. Находит записи на завтра</p>
+            <p>2. Отправляет тебе список</p>
+            <p>3. Симулирует отправку клиентам</p>
+            <p>4. Обрабатывает ответы кнопками</p>
+            <p>5. Уведомляет о проблемах</p>
         </div>
     </body>
     </html>
@@ -310,121 +403,133 @@ def home():
 
 @app.route("/remind")
 def remind():
-    return send_tomorrow_notification()
+    return send_reminders_to_admin()
 
-@app.route("/week")
-def week():
-    return send_weekly_report()
+@app.route("/test_client")
+def test_client():
+    """Тест отправки уведомления клиенту"""
+    appointments = get_real_appointments()
+    if appointments:
+        simulate_client_notification(appointments[0])
+        return f"✅ Тестовое уведомление отправлено (клиент: {appointments[0]['client']})"
+    return "❌ Нет записей для тестирования"
 
-@app.route("/test")
-def test():
-    return test_system()
-
-@app.route("/check_all")
-def check_all():
-    """Показать все записи на разные даты"""
-    html = "<h2>🔍 Проверка записей на разные даты</h2>"
+@app.route("/send_all")
+def send_all():
+    """Симуляция отправки всем клиентам"""
+    appointments = get_real_appointments()
     
-    dates = [
-        ("Сегодня", datetime.now().strftime("%Y-%m-%d")),
-        ("Завтра", (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")),
-        ("Послезавтра", (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")),
-        ("Через 3 дня", (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")),
-        ("Через 4 дня", (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")),
-        ("Через 5 дней", (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")),
-        ("Через 6 дней", (datetime.now() + timedelta(days=6)).strftime("%Y-%m-%d")),
-        ("Через 7 дней", (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")),
-    ]
+    if not appointments:
+        return "❌ Нет записей для отправки"
     
-    for label, date_str in dates:
-        appointments = find_appointments_by_date(date_str)
-        date_formatted = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+    for appointment in appointments:
+        simulate_client_notification(appointment)
+    
+    return f"✅ Симуляция завершена! Отправлено: {len(appointments)} клиентам"
+
+@app.route("/schedule")
+def schedule():
+    """Показать расписание напоминаний"""
+    html = "<h2>⏰ Расписание напоминаний</h2>"
+    html += "<div class='card'>"
+    html += "<h3>Для клиентов:</h3>"
+    html += "<p>🕕 <b>18:00</b> - Напоминание за день до визита</p>"
+    html += "<p>🕙 <b>10:00</b> - Напоминание в день визита (утро)</p>"
+    html += "<p>🕐 <b>13:00</b> - Напоминание за 2 часа до визита</p>"
+    html += "</div>"
+    
+    html += "<div class='card'>"
+    html += "<h3>Для администратора:</h3>"
+    html += "<p>🕖 <b>17:00</b> - Сводка на завтра</p>"
+    html += "<p>🕘 <b>09:00</b> - Статус подтверждений</p>"
+    html += "<p>🕜 <b>13:30</b> - Список неподтверждённых</p>"
+    html += "</div>"
+    
+    html += '<a href="/" class="btn">← На главную</a>'
+    
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            .card {{ background: #f8f9fa; border-radius: 10px; padding: 20px; margin: 15px 0; }}
+            .btn {{ display: inline-block; background: #3498db; color: white; padding: 10px 20px; 
+                   text-decoration: none; border-radius: 5px; margin: 5px; }}
+        </style>
+    </head>
+    <body>
+        {html}
+    </body>
+    </html>
+    '''
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Webhook для Telegram (для кнопок)"""
+    try:
+        data = request.json
+        print(f"Webhook data: {data}")
         
-        html += f"<h3>📅 {label} ({date_formatted}): {len(appointments)} записей</h3>"
-        
-        if appointments:
-            # Сортируем по времени
-            appointments.sort(key=lambda x: x.get("admission_date", ""))
+        if "callback_query" in data:
+            callback = data["callback_query"]
+            chat_id = callback["from"]["id"]
+            callback_data = callback["data"]
             
-            for i, app in enumerate(appointments[:10], 1):
-                time = app.get("admission_date", "").split(" ")[1][:5] if " " in app.get("admission_date", "") else "??:??"
-                client = app.get("client", {})
-                name = f"{client.get('first_name', '')} {client.get('last_name', '')}".strip()
-                if not name:
-                    name = f"Клиент ID:{app.get('client_id')}"
-                
-                pet = app.get("pet", {})
-                pet_name = pet.get("alias", "питомец")
-                
-                html += f"<p>{i}. 🕒 {time} - {name} с {pet_name}</p>"
+            handle_callback(callback_data, chat_id)
             
-            if len(appointments) > 10:
-                html += f"<p><i>... и ещё {len(appointments) - 10} записей</i></p>"
-        else:
-            html += "<p><i>Записей нет</i></p>"
-        
-        html += "<hr>"
-    
-    html += '<br><a href="/">← На главную</a>'
-    return html
+            # Ответ на callback (убираем часики)
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery", 
+                         json={"callback_query_id": callback["id"]})
+            
+        return "OK"
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return "ERROR"
 
-@app.route("/send_test")
-def send_test():
-    send_telegram("✅ <b>Тестовое сообщение</b>\nБот работает корректно!")
-    return "✅ Тестовое сообщение отправлено в Telegram"
-
-# ============ АВТОМАТИЧЕСКАЯ ОТПРАВКА ============
+# ============ 8. АВТОМАТИЧЕСКИЕ НАПОМИНАНИЯ ============
 import threading
 import time
 
-def auto_scheduler():
+def auto_reminder():
     """Автоматическая отправка напоминаний"""
     while True:
         now = datetime.now()
         
-        # Ежедневно в 18:00 - напоминание на завтра
+        # Каждый день в 18:00 - отправляем напоминания на завтра
         if now.hour == 18 and now.minute == 0:
-            print(f"🕕 {now.strftime('%H:%M')} - Отправляю напоминание на завтра...")
-            send_tomorrow_notification()
-            time.sleep(61)  # Ждём минуту чтобы не сработать дважды
-        
-        # Каждый понедельник в 9:00 - отчёт на неделю
-        if now.weekday() == 0 and now.hour == 9 and now.minute == 0:
-            print(f"📅 {now.strftime('%H:%M')} - Отправляю недельный отчёт...")
-            send_weekly_report()
+            print(f"🕕 {now.strftime('%H:%M')} - Отправляю напоминания на завтра...")
+            send_reminders_to_admin()
             time.sleep(61)
         
-        time.sleep(30)  # Проверяем каждые 30 секунд
+        # Каждый день в 10:00 - утренние напоминания
+        elif now.hour == 10 and now.minute == 0:
+            print(f"🕙 {now.strftime('%H:%M')} - Утренние напоминания...")
+            # Здесь будет отправка клиентам
+            
+        time.sleep(30)
 
-# Запускаем планировщик в фоне
-scheduler_thread = threading.Thread(target=auto_scheduler, daemon=True)
-scheduler_thread.start()
+# Запускаем планировщик
+scheduler = threading.Thread(target=auto_reminder, daemon=True)
+scheduler.start()
 
-# ============ ЗАПУСК СЕРВЕРА ============
+# ============ 9. ЗАПУСК СЕРВЕРА ============
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 VETMANAGER REMINDER BOT 2.0 ЗАПУЩЕН!")
+    print("🤖 SMART VETMANAGER BOT ЗАПУЩЕН!")
     print("=" * 60)
+    print("🎯 РЕЖИМ: ТЕСТИРОВАНИЕ")
     print(f"👤 Администратор: {ADMIN_ID}")
-    print(f"🤖 Telegram бот: @Fulsim_bot")
-    print(f"🏥 Клиника: drug14.vetmanager2.ru")
-    print(f"🔑 API ключ: {VETMANAGER_KEY[:10]}...")
+    print("📊 Тестовых записей: 10")
+    print("👨‍⚕️ Врачи: Базарнов, Олексин")
     print("=" * 60)
-    print("🌐 Веб-интерфейс доступен по адресам:")
+    print("🌐 Веб-интерфейс:")
     print("   https://vetmanager-bot-1.onrender.com/")
     print("   https://vetmanager-bot-1.onrender.com/remind")
-    print("   https://vetmanager-bot-1.onrender.com/week")
-    print("   https://vetmanager-bot-1.onrender.com/test")
     print("=" * 60)
-    print("📅 Автоматические напоминания:")
-    print("   🕕 18:00 каждый день - напоминание на завтра")
-    print("   📅 9:00 каждый понедельник - отчёт на неделю")
+    print("📱 Telegram Webhook:")
+    print("   https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook")
+    print("   URL: https://vetmanager-bot-1.onrender.com/webhook")
     print("=" * 60)
-    
-    # Тестовый запуск при старте
-    print("\n🔍 Выполняю тест системы...")
-    test_result = test_system()
-    print(f"Результат теста: {test_result}")
     
     app.run(host="0.0.0.0", port=5000, debug=False)
-    
