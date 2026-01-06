@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # ========== КОНФИГУРАЦИЯ ==========
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8516044859:AAFaJg3HeNMHhw-xV4Nm2goMbLmiFnmJDKI')
-VETMANAGER_KEY = os.environ.get('VETMANAGER_KEY', '62c2b4e440950ce2ce68c9a7f1121dd3')  # <-- ТВОЙ НАСТОЯЩИЙ КЛЮЧ!
+VETMANAGER_KEY = os.environ.get('VETMANAGER_KEY', '29607ccc63c684fa672be9694f7f09ec')  # <-- ТВОЙ НАСТОЯЩИЙ КЛЮЧ!
 VETMANAGER_DOMAIN = 'drug14.vetmanager2.ru'
 ADMIN_ID = 921853682  # Твой Telegram ID
 
