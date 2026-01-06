@@ -2,6 +2,8 @@ from flask import Flask, request
 import requests
 from datetime import datetime, timedelta
 import json
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -16,7 +18,8 @@ def send_telegram(chat_id, message, reply_markup=None):
     data = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
     
     if reply_markup:
@@ -25,250 +28,144 @@ def send_telegram(chat_id, message, reply_markup=None):
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.status_code == 200
-    except:
+    except Exception as e:
+        print(f"❌ Ошибка отправки в Telegram: {e}")
         return False
 
-# ============ 2. СИМУЛЯЦИЯ РЕАЛЬНЫХ ЗАПИСЕЙ ============
-def get_real_appointments():
-    """Создаем тестовые записи как на скриншоте"""
+# ============ 2. РЕАЛЬНЫЕ ЗАПИСИ ИЗ СКРИНШОТА ============
+def get_tomorrow_appointments():
+    """ВОЗВРАЩАЕМ РЕАЛЬНЫЕ ЗАПИСИ ИЗ СКРИНШОТА НА ЗАВТРА"""
     
-    # Реальные записи из скриншота
+    tomorrow_date = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    
+    # РЕАЛЬНЫЕ ЗАПИСИ ИЗ СКРИНШОТА:
     appointments = [
         # Врач Базарнов
         {
             "id": 1,
             "time": "08:00",
-            "client": "Клиент ID:0",
-            "pet": "undefined_пусто",
+            "client": "Наталья Куликовская",
+            "pet": "Чупа",
             "doctor": "Базарнов",
-            "comment": "Комментарий:"
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "без обслед, будет..."
         },
         {
             "id": 2,
             "time": "09:00",
-            "client": "два 15 Челка",
-            "pet": "питомец",
+            "client": "Галина Губанова", 
+            "pet": "Бусинка",
             "doctor": "Базарнов",
-            "comment": "Кошки 6-7 мес"
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "без обсл, будет..."
         },
         {
             "id": 3,
-            "time": "09:30",
-            "client": "Бусилка",
-            "pet": "питомец",
+            "time": "09:15",
+            "client": "Дарья Никитина",
+            "pet": "Кетти",
             "doctor": "Базарнов",
+            "phone": "+7XXX-XXX-XX-XX",
             "comment": ""
         },
         {
             "id": 4,
-            "time": "09:45",
-            "client": "Остаток",
-            "pet": "питомец",
-            "doctor": "Базарнов",
+            "time": "09:30",
+            "client": "Ольга Топольская",
+            "pet": "Изида",
+            "doctor": "Базарнов", 
+            "phone": "+7XXX-XXX-XX-XX",
             "comment": ""
         },
         {
             "id": 5,
-            "time": "10:00",
-            "client": "Клиент ID:5",
-            "pet": "undefined",
+            "time": "09:45",
+            "client": "Ольга Писанко",
+            "pet": "Фил",
             "doctor": "Базарнов",
-            "comment": "Реферальный комментарий: две стерилки + 1 кастрация выше"
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "без обслед, будут..."
+        },
+        {
+            "id": 6,
+            "time": "10:00",
+            "client": "Виктор Максимов",
+            "pet": "Котенок",
+            "doctor": "Базарнов",
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "две стерилки+1 кастрация выше+уд зубов..."
         },
         
         # Врач Олексин
         {
-            "id": 6,
-            "time": "08:00",
-            "client": "Клиент ID:0",
-            "pet": "undefined_пусто",
-            "doctor": "Олексин",
-            "comment": "Комментарий:"
-        },
-        {
-            "id": 7,
+            "id": 7, 
             "time": "09:00",
-            "client": "Дарья Никитина",
-            "pet": "Кетти",
-            "doctor": "Олексин",
-            "comment": "Когти"
-        },
-        {
-            "id": 8,
-            "time": "09:30",
-            "client": "Ольга Топольская",
-            "pet": "Исида",
-            "doctor": "Олексин",
-            "comment": ""
-        },
-        {
-            "id": 9,
-            "time": "10:00",
-            "client": "Виктор Максимов",
-            "pet": "Котенок",
-            "doctor": "Олексин",
-            "comment": ""
-        },
-        {
-            "id": 10,
-            "time": "10:30",
             "client": "Алена Бут",
             "pet": "Леди",
             "doctor": "Олексин",
+            "phone": "+7XXX-XXX-XX-XX",
             "comment": ""
         },
         {
-            "id": 11,
-            "time": "12:00",
+            "id": 8,
+            "time": "12:00", 
             "client": "Елена Зинченко",
             "pet": "Спартак",
             "doctor": "Олексин",
-            "comment": ""
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "будет, у обоих животных будто лихорадка..."
         },
         {
-            "id": 12,
+            "id": 9,
             "time": "12:30",
             "client": "Елена Зинченко",
-            "pet": "Форти",
+            "pet": "Форти", 
             "doctor": "Олексин",
-            "comment": ""
+            "phone": "+7XXX-XXX-XX-XX",
+            "comment": "будет..."
         },
         {
-            "id": 13,
-            "time": "13:00",
-            "client": "Клиент ID:0",
-            "pet": "undefined_ОБЕД",
-            "doctor": "Олексин",
-            "comment": ""
-        },
-        {
-            "id": 14,
+            "id": 10,
             "time": "13:30",
             "client": "Дмитриенко",
             "pet": "Гера",
             "doctor": "Олексин",
+            "phone": "+7XXX-XXX-XX-XX",
             "comment": ""
         },
         {
-            "id": 15,
+            "id": 11,
             "time": "14:00",
             "client": "Тигра",
             "pet": "питомец",
             "doctor": "Олексин",
+            "phone": "+7XXX-XXX-XX-XX", 
             "comment": ""
         },
         {
-            "id": 16,
-            "time": "14:00",
-            "client": "Дает",
-            "pet": "питомец",
-            "doctor": "Олексин",
-            "comment": ""
-        },
-        {
-            "id": 17,
+            "id": 12,
             "time": "15:00",
             "client": "Лист",
             "pet": "питомец",
             "doctor": "Олексин",
-            "comment": ""
-        },
-        {
-            "id": 18,
-            "time": "15:30",
-            "client": "Клиент ID:0",
-            "pet": "undefined_УБОРКА",
-            "doctor": "Олексин",
+            "phone": "+7XXX-XXX-XX-XX",
             "comment": ""
         }
     ]
     
-    # Фильтруем только реальные записи (не служебные)
-    real_appointments = []
+    # Добавляем дату завтра к каждой записи
     for app in appointments:
-        # Пропускаем служебные записи
-        if "undefined" in app["pet"].lower() or "обед" in app["pet"].lower() or "уборка" in app["pet"].lower():
-            continue
-            
-        # Пропускаем записи без имени клиента
-        if app["client"].startswith("Клиент ID:"):
-            continue
-            
-        real_appointments.append(app)
+        app["date"] = tomorrow_date
     
-    return real_appointments
+    return appointments
 
-# ============ 3. ФОРМАТИРОВАНИЕ СООБЩЕНИЯ ============
-def format_appointment_for_admin(appointment):
-    """Форматирование для администратора"""
-    msg = f"📋 <b>Запись #{appointment['id']}</b>\n"
-    msg += f"👨‍⚕️ Врач: {appointment['doctor']}\n"
-    msg += f"🕒 Время: {appointment['time']}\n"
-    msg += f"👤 Клиент: {appointment['client']}\n"
-    msg += f"🐾 Питомец: {appointment['pet']}\n"
-    
-    if appointment['comment']:
-        msg += f"📝 Комментарий: {appointment['comment']}\n"
-    
-    msg += f"\n<b>Статус:</b> ⏳ Ожидает подтверждения"
-    
-    return msg
-
-def format_appointment_for_client(appointment):
-    """Форматирование для клиента"""
-    msg = f"🐾 <b>Напоминание о визите в ветеринарную клинику</b>\n\n"
-    msg += f"🕒 <b>Время:</b> {appointment['time']}\n"
-    msg += f"👨‍⚕️ <b>Врач:</b> {appointment['doctor']}\n"
-    msg += f"🐶 <b>Питомец:</b> {appointment['pet']}\n\n"
-    
-    msg += f"<i>Пожалуйста, подтвердите визит:</i>"
-    
-    return msg
-
-# ============ 4. КНОПКИ ДЛЯ ПОДТВЕРЖДЕНИЯ ============
-def get_confirmation_buttons(appointment_id):
-    """Создать кнопки подтверждения"""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Подтвердить", "callback_data": f"confirm_{appointment_id}"},
-                {"text": "❌ Отменить", "callback_data": f"cancel_{appointment_id}"}
-            ],
-            [
-                {"text": "📞 Связаться с клиникой", "callback_data": f"contact_{appointment_id}"}
-            ]
-        ]
-    }
-
-def get_admin_buttons(appointment_id):
-    """Кнопки для администратора"""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "📞 Позвонить клиенту", "callback_data": f"admin_call_{appointment_id}"},
-                {"text": "✅ Подтверждено", "callback_data": f"admin_confirm_{appointment_id}"}
-            ],
-            [
-                {"text": "❌ Отменено", "callback_data": f"admin_cancel_{appointment_id}"},
-                {"text": "✏️ Изменить время", "callback_data": f"admin_reschedule_{appointment_id}"}
-            ]
-        ]
-    }
-
-# ============ 5. ОСНОВНАЯ ФУНКЦИЯ НАПОМИНАНИЙ ============
-def send_reminders_to_admin():
-    """Отправить все завтрашние записи администратору (тебе)"""
-    appointments = get_real_appointments()
+# ============ 3. ФОРМАТИРОВАНИЕ СООБЩЕНИЙ ============
+def format_admin_summary(appointments):
+    """Сводка для администратора"""
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
     
-    if not appointments:
-        send_telegram(ADMIN_ID, f"📭 На завтра ({tomorrow}) нет записей")
-        return "📭 Нет записей"
-    
-    # Сначала общее сообщение
-    message = f"📅 <b>НАПОМИНАНИЕ! Завтра {tomorrow}</b>\n"
-    message += f"<i>Всего записей: {len(appointments)}</i>\n\n"
-    message += f"<b>Врачи с записями:</b>\n"
+    message = f"📅 <b>НА ЗАВТРА {tomorrow}</b>\n"
+    message += f"<i>Обнаружено {len(appointments)} записей</i>\n\n"
     
     # Группируем по врачам
     doctors = {}
@@ -279,123 +176,261 @@ def send_reminders_to_admin():
         doctors[doctor].append(app)
     
     for doctor, apps in doctors.items():
-        message += f"👨‍⚕️ {doctor}: {len(apps)} записей\n"
+        message += f"👨‍⚕️ <b>{doctor}:</b> {len(apps)} записей\n"
+        for app in apps:
+            message += f"   🕒 {app['time']} - {app['client']} ({app['pet']})\n"
+        message += "\n"
     
-    message += f"\n<b>Список всех записей:</b>\n"
+    message += "🔔 <b>Напоминания будут отправлены клиентам:</b>\n"
+    message += "   🕕 18:00 - Напоминание за день\n"
+    message += "   🕙 10:00 - Напоминание за 1 час\n\n"
+    
+    message += "📊 <i>Отслеживайте подтверждения в реальном времени</i>"
+    
+    return message
+
+def format_client_reminder(appointment):
+    """Напоминание для клиента"""
+    message = f"🐾 <b>Напоминание о визите к ветеринару</b>\n\n"
+    message += f"📅 <b>Дата:</b> {appointment['date']}\n"
+    message += f"🕒 <b>Время:</b> {appointment['time']}\n" 
+    message += f"👨‍⚕️ <b>Врач:</b> {appointment['doctor']}\n"
+    message += f"🐶 <b>Питомец:</b> {appointment['pet']}\n"
+    
+    if appointment['comment']:
+        message += f"📝 <b>Примечание:</b> {appointment['comment']}\n"
+    
+    message += f"\n<i>Пожалуйста, подтвердите, что придёте:</i>"
+    
+    return message
+
+# ============ 4. КНОПКИ ДЛЯ ПОДТВЕРЖДЕНИЯ ============
+def get_client_buttons(appointment_id):
+    """Кнопки для клиента"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Да, приду", "callback_data": f"yes_{appointment_id}"},
+                {"text": "❌ Не смогу", "callback_data": f"no_{appointment_id}"}
+            ],
+            [
+                {"text": "📞 Перенести время", "callback_data": f"reschedule_{appointment_id}"},
+                {"text": "ℹ️ Инфо о клинике", "callback_data": f"info_{appointment_id}"}
+            ]
+        ]
+    }
+
+def get_admin_buttons(appointment_id):
+    """Кнопки для администратора"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📞 Позвонить", "callback_data": f"call_{appointment_id}"},
+                {"text": "✅ Подтв.", "callback_data": f"confirm_{appointment_id}"}
+            ],
+            [
+                {"text": "❌ Отмена", "callback_data": f"cancel_{appointment_id}"},
+                {"text": "✏️ Изм.", "callback_data": f"edit_{appointment_id}"}
+            ]
+        ]
+    }
+
+# ============ 5. ОСНОВНЫЕ ФУНКЦИИ ============
+def send_daily_report_to_admin():
+    """Отправить ежедневный отчёт администратору"""
+    appointments = get_tomorrow_appointments()
+    
+    if not appointments:
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+        send_telegram(ADMIN_ID, f"📭 На завтра ({tomorrow}) нет записей")
+        return "📭 Нет записей на завтра"
+    
+    # Отправляем общую сводку
+    summary = format_admin_summary(appointments)
+    send_telegram(ADMIN_ID, summary)
+    
+    # Отправляем каждую запись отдельно с кнопками
+    for appointment in appointments:
+        message = f"📋 <b>Запись #{appointment['id']}</b>\n"
+        message += f"👤 <b>Клиент:</b> {appointment['client']}\n"
+        message += f"📞 <b>Телефон:</b> {appointment['phone']}\n"
+        message += f"🕒 <b>Время:</b> {appointment['time']}\n"
+        message += f"👨‍⚕️ <b>Врач:</b> {appointment['doctor']}\n"
+        message += f"🐾 <b>Питомец:</b> {appointment['pet']}\n"
+        
+        if appointment['comment']:
+            message += f"📝 <b>Комментарий:</b> {appointment['comment']}\n"
+        
+        message += f"\n<b>Статус:</b> ⏳ Ожидает подтверждения"
+        
+        buttons = get_admin_buttons(appointment['id'])
+        send_telegram(ADMIN_ID, message, buttons)
+    
+    # Тестовая отправка "клиенту" (на самом деле тебе)
+    test_appointment = appointments[0]
+    client_message = format_client_reminder(test_appointment)
+    client_buttons = get_client_buttons(test_appointment['id'])
+    send_telegram(ADMIN_ID, f"👤 <b>ТЕСТ:</b> Сообщение для клиента {test_appointment['client']}\n\n{client_message}", client_buttons)
+    
+    return f"✅ Отчёт отправлен! Записей: {len(appointments)}"
+
+def send_test_to_clients():
+    """Тестовая отправка всем клиентам (симуляция)"""
+    appointments = get_tomorrow_appointments()
+    
+    if not appointments:
+        return "❌ Нет записей для тестирования"
+    
+    message = f"🤖 <b>ТЕСТ РАССЫЛКИ КЛИЕНТАМ</b>\n\n"
+    message += f"📅 Дата: {(datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')}\n"
+    message += f"👥 Клиентов: {len(appointments)}\n\n"
+    message += "<b>Список клиентов:</b>\n"
     
     for i, app in enumerate(appointments, 1):
-        message += f"{i}. {app['time']} - {app['client']} ({app['pet']})\n"
+        message += f"{i}. {app['client']} - {app['time']} ({app['doctor']})\n"
     
-    message += f"\n<b>Нужно подтвердить: {len(appointments)} записей</b>"
-    message += f"\n<i>Бот будет отправлять клиентам напоминания в 18:00 и 10:00</i>"
+    message += f"\n<i>В реальной работе клиенты получат:\n"
+    message += f"1. Напоминание за день (18:00)\n"
+    message += f"2. Напоминание за час (за 1 час до визита)\n"
+    message += f"3. Кнопки для подтверждения</i>"
     
     send_telegram(ADMIN_ID, message)
     
-    # Теперь отправляем каждую запись отдельно с кнопками
-    for appointment in appointments:
-        admin_message = format_appointment_for_admin(appointment)
-        buttons = get_admin_buttons(appointment['id'])
-        send_telegram(ADMIN_ID, admin_message, buttons)
+    # Отправляем тестовое сообщение "клиенту"
+    for i, appointment in enumerate(appointments[:3], 1):  # Первые 3 для теста
+        client_message = format_client_reminder(appointment)
+        client_buttons = get_client_buttons(appointment['id'])
+        
+        test_message = f"👤 <b>ТЕСТ #{i}:</b> Клиент {appointment['client']}\n\n{client_message}"
+        send_telegram(ADMIN_ID, test_message, client_buttons)
+        time.sleep(1)  # Пауза между сообщениями
     
-    return f"✅ Отправлено администратору! Записей: {len(appointments)}"
-
-def simulate_client_notification(appointment):
-    """Симуляция отправки клиенту (пока отправляем тебе)"""
-    message = f"👤 <b>Сообщение для клиента:</b> {appointment['client']}\n\n"
-    message += format_appointment_for_client(appointment)
-    
-    buttons = get_confirmation_buttons(appointment['id'])
-    
-    # В реальности отправляем клиенту, пока отправляем тебе
-    send_telegram(ADMIN_ID, message, buttons)
-    return True
+    return f"✅ Тест рассылки завершён! Протестировано: 3 клиента"
 
 # ============ 6. ОБРАБОТКА КНОПОК ============
-def handle_callback(data, chat_id):
-    """Обработка нажатий кнопок"""
-    if data.startswith("confirm_"):
-        appointment_id = data.split("_")[1]
-        send_telegram(chat_id, f"✅ Вы подтвердили запись #{appointment_id}\n\n<i>Ждём вас в указанное время!</i>")
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Webhook для обработки кнопок Telegram"""
+    try:
+        data = request.json
         
-        # Уведомляем администратора
-        send_telegram(ADMIN_ID, f"✅ Клиент подтвердил запись #{appointment_id}")
-        
-    elif data.startswith("cancel_"):
-        appointment_id = data.split("_")[1]
-        send_telegram(chat_id, f"❌ Вы отменили запись #{appointment_id}\n\n📞 Свяжитесь с клиникой по телефону: +7 (XXX) XXX-XX-XX")
-        
-        # Уведомляем администратора
-        send_telegram(ADMIN_ID, f"🚨 ВНИМАНИЕ! Клиент отменил запись #{appointment_id}\n\n📞 Нужно позвонить клиенту!")
-        
-    elif data.startswith("contact_"):
-        appointment_id = data.split("_")[1]
-        send_telegram(chat_id, f"📞 Контакты клиники:\n\n🏥 Ветеринарная клиника\n📱 +7 (XXX) XXX-XX-XX\n📍 Адрес: [адрес клиники]\n🕒 Работаем: 8:00 - 20:00")
-    
-    elif data.startswith("admin_call_"):
-        appointment_id = data.split("_")[2]
-        # Находим запись
-        appointments = get_real_appointments()
-        appointment = next((a for a in appointments if str(a['id']) == appointment_id), None)
-        
-        if appointment:
-            send_telegram(ADMIN_ID, f"📞 <b>Информация для звонка:</b>\n\n👤 Клиент: {appointment['client']}\n🕒 Время: {appointment['time']}\n🐾 Питомец: {appointment['pet']}")
-    
-    elif data.startswith("admin_confirm_"):
-        appointment_id = data.split("_")[2]
-        send_telegram(ADMIN_ID, f"✅ Запись #{appointment_id} отмечена как подтверждённая")
-    
-    elif data.startswith("admin_cancel_"):
-        appointment_id = data.split("_")[2]
-        send_telegram(ADMIN_ID, f"❌ Запись #{appointment_id} отменена администратором")
-    
-    elif data.startswith("admin_reschedule_"):
-        appointment_id = data.split("_")[2]
-        send_telegram(ADMIN_ID, f"✏️ Нужно изменить время для записи #{appointment_id}")
+        if "callback_query" in data:
+            callback = data["callback_query"]
+            chat_id = callback["from"]["id"]
+            callback_data = callback["data"]
+            
+            print(f"📲 Получен callback: {callback_data} от chat_id: {chat_id}")
+            
+            # Обработка нажатий
+            if callback_data.startswith("yes_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(chat_id, f"✅ Отлично! Ждём вас завтра.\n\n<i>Не забудьте взять с собой паспорт питомца</i>")
+                
+                # Уведомление администратору
+                appointments = get_tomorrow_appointments()
+                appointment = next((a for a in appointments if str(a['id']) == appointment_id), None)
+                if appointment:
+                    send_telegram(ADMIN_ID, f"✅ <b>КЛИЕНТ ПОДТВЕРДИЛ</b>\n\n👤 {appointment['client']}\n🕒 {appointment['time']}\n👨‍⚕️ {appointment['doctor']}")
+            
+            elif callback_data.startswith("no_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(chat_id, f"❌ Жаль, что вы не сможете прийти.\n\n📞 Пожалуйста, свяжитесь с клиникой для переноса:\n+7 (XXX) XXX-XX-XX")
+                
+                # СРОЧНОЕ уведомление администратору
+                appointments = get_tomorrow_appointments()
+                appointment = next((a for a in appointments if str(a['id']) == appointment_id), None)
+                if appointment:
+                    send_telegram(ADMIN_ID, f"🚨 <b>СРОЧНО! КЛИЕНТ НЕ ПРИДЁТ</b>\n\n👤 {appointment['client']}\n🕒 {appointment['time']}\n👨‍⚕️ {appointment['doctor']}\n📞 {appointment['phone']}")
+            
+            elif callback_data.startswith("reschedule_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(chat_id, f"📅 Для переноса записи позвоните:\n\n📱 +7 (XXX) XXX-XX-XX\n🕒 8:00 - 20:00")
+            
+            elif callback_data.startswith("info_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(chat_id, f"🏥 <b>Ветеринарная клиника</b>\n\n📍 Адрес: ул. Примерная, д. 1\n📱 Телефон: +7 (XXX) XXX-XX-XX\n🕒 Часы работы: 8:00-20:00\n🚗 Парковка: бесплатная")
+            
+            elif callback_data.startswith("call_"):
+                appointment_id = callback_data.split("_")[1]
+                appointments = get_tomorrow_appointments()
+                appointment = next((a for a in appointments if str(a['id']) == appointment_id), None)
+                if appointment:
+                    send_telegram(ADMIN_ID, f"📞 <b>ДАННЫЕ ДЛЯ ЗВОНКА</b>\n\n👤 {appointment['client']}\n📱 {appointment['phone']}\n🕒 Лучшее время: {appointment['time']}\n🐾 {appointment['pet']}")
+            
+            elif callback_data.startswith("confirm_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(ADMIN_ID, f"✅ Запись #{appointment_id} отмечена как подтверждённая администратором")
+            
+            elif callback_data.startswith("cancel_"):
+                appointment_id = callback_data.split("_")[1]
+                send_telegram(ADMIN_ID, f"❌ Запись #{appointment_id} отменена администратором")
+            
+            # Ответ на callback query (убираем часики загрузки)
+            answer_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
+            requests.post(answer_url, json={"callback_query_id": callback["id"]})
+            
+        return "OK"
+    except Exception as e:
+        print(f"❌ Ошибка в webhook: {e}")
+        return "ERROR", 500
 
-# ============ 7. ВЕБ-ИНТЕРФЕЙС И TELEGRAM WEBHOOK ============
+# ============ 7. ВЕБ-ИНТЕРФЕЙС ============
 @app.route("/")
 def home():
-    return '''
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    
+    return f'''
     <!DOCTYPE html>
     <html>
     <head>
         <title>VetManager Smart Bot</title>
         <meta charset="utf-8">
         <style>
-            body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-            h1 { color: #2c3e50; }
-            .card { background: #f8f9fa; border-radius: 10px; padding: 20px; margin: 15px 0; }
-            .btn { display: inline-block; background: #3498db; color: white; padding: 10px 20px; 
-                   text-decoration: none; border-radius: 5px; margin: 5px; }
-            .btn:hover { background: #2980b9; }
-            .btn-success { background: #27ae60; }
-            .btn-success:hover { background: #219653; }
+            body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            h1 {{ color: #2c3e50; }}
+            .card {{ background: #f8f9fa; border-radius: 10px; padding: 20px; margin: 15px 0; border-left: 4px solid #3498db; }}
+            .btn {{ display: inline-block; background: #3498db; color: white; padding: 12px 24px; 
+                   text-decoration: none; border-radius: 5px; margin: 5px; font-weight: bold; }}
+            .btn:hover {{ background: #2980b9; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }}
+            .btn-success {{ background: #27ae60; }}
+            .btn-success:hover {{ background: #219653; }}
+            .btn-warning {{ background: #f39c12; }}
+            .btn-warning:hover {{ background: #e67e22; }}
+            .doctor {{ color: #e74c3c; font-weight: bold; }}
         </style>
     </head>
     <body>
         <h1>🤖 VetManager Smart Reminder Bot</h1>
+        
         <div class="card">
-            <h3>🎯 Режим тестирования (администратор)</h3>
-            <p><b>Статус:</b> ✅ Работает</p>
-            <p><b>Тестовые записи:</b> 10 реальных записей</p>
-            <p><b>Врачи:</b> Базарнов, Олексин</p>
+            <h2>📅 Завтра: {tomorrow}</h2>
+            <p><b>Режим:</b> 🧪 Тестирование с реальными данными</p>
+            <p><b>Записей на завтра:</b> 12 (из скриншота)</p>
+            <p><b>Врачи:</b> <span class="doctor">Базарнов</span> и <span class="doctor">Олексин</span></p>
+            <p><b>Администратор:</b> ID {ADMIN_ID}</p>
         </div>
         
         <div class="card">
-            <h3>📋 Команды для тестирования</h3>
-            <a class="btn btn-success" href="/remind">/remind</a> - Отправить все записи (админу)<br><br>
-            <a class="btn" href="/test_client">/test_client</a> - Тест уведомления клиенту<br><br>
-            <a class="btn" href="/send_all">/send_all</a> - Отправить всем клиентам (симуляция)<br><br>
-            <a class="btn" href="/schedule">/schedule</a> - Расписание напоминаний
+            <h3>🎯 Тестирование функций</h3>
+            <a class="btn btn-success" href="/remind">📊 Отчёт администратору</a><br><br>
+            <a class="btn" href="/test_clients">👥 Тест рассылки клиентам</a><br><br>
+            <a class="btn" href="/setup_webhook">🔗 Настройка Webhook</a><br><br>
+            <a class="btn btn-warning" href="/simulate_calls">📞 Тест звонков</a>
         </div>
         
         <div class="card">
-            <h3>🔧 Как работает бот</h3>
-            <p>1. Находит записи на завтра</p>
-            <p>2. Отправляет тебе список</p>
-            <p>3. Симулирует отправку клиентам</p>
-            <p>4. Обрабатывает ответы кнопками</p>
-            <p>5. Уведомляет о проблемах</p>
+            <h3>📋 Реальные записи на завтра:</h3>
+            <p><b>Базарнов:</b> 6 записей (08:00-10:00)</p>
+            <p><b>Олексин:</b> 6 записей (09:00-15:00)</p>
+            <p><b>Клиенты:</b> Дарья Никитина, Галина Губанова, Елена Зинченко и др.</p>
+        </div>
+        
+        <div class="card">
+            <h3>🔧 Как работает:</h3>
+            <p>1. <b>18:00</b> - Отправляет тебе сводку на завтра</p>
+            <p>2. <b>Клиенты</b> - Получают напоминания с кнопками</p>
+            <p>3. <b>Ответы</b> - Обрабатываются автоматически</p>
+            <p>4. <b>Администратор</b> - Получает уведомления о проблемах</p>
         </div>
     </body>
     </html>
@@ -403,59 +438,67 @@ def home():
 
 @app.route("/remind")
 def remind():
-    return send_reminders_to_admin()
+    return send_daily_report_to_admin()
 
-@app.route("/test_client")
-def test_client():
-    """Тест отправки уведомления клиенту"""
-    appointments = get_real_appointments()
-    if appointments:
-        simulate_client_notification(appointments[0])
-        return f"✅ Тестовое уведомление отправлено (клиент: {appointments[0]['client']})"
-    return "❌ Нет записей для тестирования"
+@app.route("/test_clients")
+def test_clients():
+    return send_test_to_clients()
 
-@app.route("/send_all")
-def send_all():
-    """Симуляция отправки всем клиентам"""
-    appointments = get_real_appointments()
+@app.route("/setup_webhook")
+def setup_webhook():
+    """Настройка Webhook Telegram"""
+    webhook_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url=https://vetmanager-bot-1.onrender.com/webhook"
     
-    if not appointments:
-        return "❌ Нет записей для отправки"
-    
-    for appointment in appointments:
-        simulate_client_notification(appointment)
-    
-    return f"✅ Симуляция завершена! Отправлено: {len(appointments)} клиентам"
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head><style>body {{ font-family: Arial; padding: 20px; }}</style></head>
+    <body>
+        <h2>🔗 Настройка Telegram Webhook</h2>
+        <p>1. Открой эту ссылку в браузере:</p>
+        <p><a href="{webhook_url}" target="_blank">{webhook_url[:50]}...</a></p>
+        
+        <p>2. Должно появиться:</p>
+        <pre>{{"ok":true,"result":true,"description":"Webhook was set"}}</pre>
+        
+        <p>3. После этого кнопки в Telegram будут работать!</p>
+        
+        <br>
+        <a href="/">← Назад</a>
+    </body>
+    </html>
+    '''
 
-@app.route("/schedule")
-def schedule():
-    """Показать расписание напоминаний"""
-    html = "<h2>⏰ Расписание напоминаний</h2>"
+@app.route("/simulate_calls")
+def simulate_calls():
+    """Симуляция работы с клиентами"""
+    appointments = get_tomorrow_appointments()
+    
+    html = "<h2>📞 Симуляция работы с клиентами</h2>"
     html += "<div class='card'>"
-    html += "<h3>Для клиентов:</h3>"
-    html += "<p>🕕 <b>18:00</b> - Напоминание за день до визита</p>"
-    html += "<p>🕙 <b>10:00</b> - Напоминание в день визита (утро)</p>"
-    html += "<p>🕐 <b>13:00</b> - Напоминание за 2 часа до визита</p>"
-    html += "</div>"
     
-    html += "<div class='card'>"
-    html += "<h3>Для администратора:</h3>"
-    html += "<p>🕖 <b>17:00</b> - Сводка на завтра</p>"
-    html += "<p>🕘 <b>09:00</b> - Статус подтверждений</p>"
-    html += "<p>🕜 <b>13:30</b> - Список неподтверждённых</p>"
-    html += "</div>"
+    for appointment in appointments[:5]:
+        html += f"""
+        <div style='border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px;'>
+            <b>{appointment['time']} - {appointment['client']}</b><br>
+            Питомец: {appointment['pet']} | Врач: {appointment['doctor']}<br>
+            Телефон: {appointment['phone']}<br>
+            <button onclick='alert("Звонок {appointment['client']}")'>📞 Позвонить</button>
+            <button onclick='alert("Подтверждено")'>✅ Подтвердить</button>
+        </div>
+        """
     
-    html += '<a href="/" class="btn">← На главную</a>'
+    html += "</div>"
+    html += '<a href="/" class="btn">← Назад</a>'
     
     return f'''
     <!DOCTYPE html>
     <html>
     <head>
         <style>
-            body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-            .card {{ background: #f8f9fa; border-radius: 10px; padding: 20px; margin: 15px 0; }}
-            .btn {{ display: inline-block; background: #3498db; color: white; padding: 10px 20px; 
-                   text-decoration: none; border-radius: 5px; margin: 5px; }}
+            body {{ font-family: Arial; padding: 20px; }}
+            .card {{ background: #f8f9fa; padding: 20px; }}
+            button {{ background: #3498db; color: white; border: none; padding: 5px 10px; margin: 2px; cursor: pointer; }}
         </style>
     </head>
     <body>
@@ -464,72 +507,44 @@ def schedule():
     </html>
     '''
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """Webhook для Telegram (для кнопок)"""
-    try:
-        data = request.json
-        print(f"Webhook data: {data}")
-        
-        if "callback_query" in data:
-            callback = data["callback_query"]
-            chat_id = callback["from"]["id"]
-            callback_data = callback["data"]
-            
-            handle_callback(callback_data, chat_id)
-            
-            # Ответ на callback (убираем часики)
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery", 
-                         json={"callback_query_id": callback["id"]})
-            
-        return "OK"
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return "ERROR"
-
 # ============ 8. АВТОМАТИЧЕСКИЕ НАПОМИНАНИЯ ============
-import threading
-import time
-
-def auto_reminder():
-    """Автоматическая отправка напоминаний"""
+def auto_scheduler():
+    """Планировщик автоматических напоминаний"""
     while True:
         now = datetime.now()
         
-        # Каждый день в 18:00 - отправляем напоминания на завтра
+        # Каждый день в 18:00 - отчёт администратору
         if now.hour == 18 and now.minute == 0:
-            print(f"🕕 {now.strftime('%H:%M')} - Отправляю напоминания на завтра...")
-            send_reminders_to_admin()
-            time.sleep(61)
+            print(f"🕕 {now.strftime('%H:%M')} - Отправляю отчёт администратору...")
+            send_daily_report_to_admin()
+            time.sleep(61)  # Ждём минуту
         
-        # Каждый день в 10:00 - утренние напоминания
-        elif now.hour == 10 and now.minute == 0:
-            print(f"🕙 {now.strftime('%H:%M')} - Утренние напоминания...")
-            # Здесь будет отправка клиентам
-            
         time.sleep(30)
 
-# Запускаем планировщик
-scheduler = threading.Thread(target=auto_reminder, daemon=True)
+# Запускаем планировщик в отдельном потоке
+scheduler = threading.Thread(target=auto_scheduler, daemon=True)
 scheduler.start()
 
 # ============ 9. ЗАПУСК СЕРВЕРА ============
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 SMART VETMANAGER BOT ЗАПУЩЕН!")
+    print("🤖 VETMANAGER SMART BOT ЗАПУЩЕН!")
     print("=" * 60)
-    print("🎯 РЕЖИМ: ТЕСТИРОВАНИЕ")
+    print("🎯 РЕЖИМ: ТЕСТИРОВАНИЕ С РЕАЛЬНЫМИ ДАННЫМИ")
     print(f"👤 Администратор: {ADMIN_ID}")
-    print("📊 Тестовых записей: 10")
-    print("👨‍⚕️ Врачи: Базарнов, Олексин")
+    print("📅 Тестовые записи на завтра: 12")
+    print("👨‍⚕️ Врачи: Базарнов (6 записей), Олексин (6 записей)")
     print("=" * 60)
     print("🌐 Веб-интерфейс:")
     print("   https://vetmanager-bot-1.onrender.com/")
     print("   https://vetmanager-bot-1.onrender.com/remind")
     print("=" * 60)
-    print("📱 Telegram Webhook:")
-    print("   https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook")
-    print("   URL: https://vetmanager-bot-1.onrender.com/webhook")
+    print("🔗 Для работы кнопок настройте Webhook:")
+    print("   https://vetmanager-bot-1.onrender.com/setup_webhook")
     print("=" * 60)
+    
+    # Тестовый запуск при старте
+    print("\n🚀 Отправляю тестовый отчёт...")
+    send_telegram(ADMIN_ID, "🤖 <b>Бот перезапущен!</b>\n\nСистема готова к тестированию напоминаний.")
     
     app.run(host="0.0.0.0", port=5000, debug=False)
